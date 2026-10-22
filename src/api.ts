@@ -3,7 +3,9 @@ function normalizeApiBase(url: string) {
   return normalized.endsWith('/api/v1') ? normalized : `${normalized}/api/v1`;
 }
 
-const API_BASE = normalizeApiBase(import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api/v1');
+const API_BASE = normalizeApiBase(
+  import.meta.env.VITE_API_URL || 'https://api-production-2c752.up.railway.app/api/v1',
+);
 
 let authToken: string | null = localStorage.getItem('admin_token');
 
@@ -50,23 +52,32 @@ export function clearToken() {
   localStorage.removeItem('admin_token');
 }
 
-async function refreshAccessToken() {
-  const response = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
+let refreshPromise: Promise<void> | null = null;
 
-  if (!response.ok) {
-    throw new Error('Session refresh failed');
+function refreshAccessToken(): Promise<void> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const response = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Session refresh failed');
+      }
+
+      const json = await response.json() as { data?: { accessToken?: string } };
+      const token = json.data?.accessToken;
+      if (!token) {
+        throw new Error('Session refresh returned no access token');
+      }
+
+      setToken(token);
+    })().finally(() => {
+      refreshPromise = null;
+    });
   }
-
-  const json = await response.json() as { data?: { accessToken?: string } };
-  const token = json.data?.accessToken;
-  if (!token) {
-    throw new Error('Session refresh returned no access token');
-  }
-
-  setToken(token);
+  return refreshPromise;
 }
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}, canRefresh = true): Promise<T> {
