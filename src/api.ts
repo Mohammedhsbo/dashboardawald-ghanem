@@ -1,0 +1,2163 @@
+function normalizeApiBase(url: string) {
+  const normalized = url.replace(/\/+$/, '');
+  return normalized.endsWith('/api/v1') ? normalized : `${normalized}/api/v1`;
+}
+
+const API_BASE = normalizeApiBase(import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api/v1');
+
+let authToken: string | null = localStorage.getItem('admin_token');
+
+export interface Integration {
+  id: string;
+  integrationName: string;
+  isEnabled: boolean;
+  healthStatus: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+  lastHealthCheck: string;
+  provider: {
+    providerKey: string;
+    providerName: string;
+    category: string;
+  };
+  branch?: {
+    nameEn: string;
+  };
+}
+
+export interface APIKey {
+  id: string;
+  keyPrefix: string;
+  description: string;
+  environment: string;
+  scope: any;
+  branchId: string | null;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  usageCount: number;
+  createdAt: string;
+}
+
+export function setToken(token: string) {
+  authToken = token;
+  localStorage.setItem('admin_token', token);
+}
+
+export function getToken() {
+  return authToken;
+}
+
+export function clearToken() {
+  authToken = null;
+  localStorage.removeItem('admin_token');
+}
+
+async function refreshAccessToken() {
+  const response = await fetch(`${API_BASE}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    throw new Error('Session refresh failed');
+  }
+
+  const json = await response.json() as { data?: { accessToken?: string } };
+  const token = json.data?.accessToken;
+  if (!token) {
+    throw new Error('Session refresh returned no access token');
+  }
+
+  setToken(token);
+}
+
+export async function apiFetch<T>(path: string, options: RequestInit = {}, canRefresh = true): Promise<T> {
+  const isFormData = options.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: 'include',
+  });
+  const json = await res.json();
+
+  if (res.status === 401 && canRefresh && path !== '/auth/login' && path !== '/auth/refresh') {
+    try {
+      await refreshAccessToken();
+      return apiFetch<T>(path, options, false);
+    } catch {
+      clearToken();
+    }
+  }
+
+  if (!res.ok) {
+    const errorBody = json.error ?? json;
+    const err = new Error(errorBody.message ?? json.message ?? 'Request failed') as Error & { code?: string; status?: number; details?: unknown };
+    err.code = errorBody.code ?? json.code;
+    err.status = res.status;
+    err.details = errorBody.details;
+    throw err;
+  }
+
+  if (Array.isArray(json.data) && json.meta) {
+    return { items: json.data, ...json.meta } as T;
+  }
+
+  if (Array.isArray(json.items) && typeof json.total === 'number') {
+    return json as T;
+  }
+
+  if (Array.isArray(json.items) && json.meta) {
+    return { items: json.items, ...json.meta } as T;
+  }
+
+  return Object.prototype.hasOwnProperty.call(json, 'data') ? json.data : json;
+}
+
+export const integrations = {
+  list: async (): Promise<Integration[]> => {
+    const response = await apiFetch<{ items: Integration[] }>('/admin/integrations');
+    return response.items;
+  },
+};
+
+export const apiKeys = {
+  list: async (): Promise<APIKey[]> => {
+    const response = await apiFetch<{ items: APIKey[] }>('/admin/api-keys');
+    return response.items;
+  },
+};
+
+// ─────────────────────────────────────────────────────────
+// Auth
+// ─────────────────────────────────────────────────────────
+export const auth = {
+  login: (email: string, password: string) =>
+    apiFetch<{ accessToken: string }>('/auth/admin-login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  logout: () =>
+    apiFetch<null>('/auth/logout', { method: 'POST' }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Suppliers
+// ─────────────────────────────────────────────────────────
+
+export interface Supplier {
+  id: string;
+  name: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  isActive: boolean;
+  branchId?: string;
+  createdAt: string;
+}
+
+export interface SupplierInput {
+  name: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  isActive?: boolean;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface Branch {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  address?: string | null;
+  phone?: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BranchInput {
+  nameAr: string;
+  nameEn: string;
+  address?: string;
+  phone?: string;
+  isActive?: boolean;
+}
+
+export const branches = {
+  list: (params?: { page?: number; limit?: number; search?: string; isActive?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.search) q.set('search', params.search);
+    if (params?.isActive !== undefined) q.set('isActive', String(params.isActive));
+    return apiFetch<PaginatedResult<Branch>>(`/branches?${q}`);
+  },
+  get: (id: string) => apiFetch<Branch>(`/branches/${id}`),
+  create: (data: BranchInput) =>
+    apiFetch<Branch>('/branches', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<BranchInput>) =>
+    apiFetch<Branch>(`/branches/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    apiFetch<null>(`/branches/${id}`, { method: 'DELETE' }),
+};
+
+export const suppliers = {
+  list: (params?: { search?: string; page?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<Supplier>>(`/suppliers?${q}`);
+  },
+  get: (id: string) => apiFetch<Supplier>(`/suppliers/${id}`),
+  create: (data: SupplierInput) =>
+    apiFetch<Supplier>('/suppliers', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<SupplierInput>) =>
+    apiFetch<Supplier>(`/suppliers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    apiFetch<null>(`/suppliers/${id}`, { method: 'DELETE' }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Brands & Categories
+// ─────────────────────────────────────────────────────────
+export interface BrandCreate {
+  nameAr: string;
+  nameEn: string;
+  logo?: string;
+  sortOrder?: number;
+}
+
+export interface BrandUpdate {
+  nameAr?: string;
+  nameEn?: string;
+  logo?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface BrandResponse {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  logo: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  _count?: { motorcycles: number };
+}
+
+export interface CategoryCreate {
+  nameAr: string;
+  nameEn: string;
+  parentId?: string;
+  sortOrder?: number;
+}
+
+export interface CategoryUpdate {
+  nameAr?: string;
+  nameEn?: string;
+  parentId?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface CategoryResponse {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  parentId: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CategoryWithRelations extends CategoryResponse {
+  parent: { id: string; nameAr: string; nameEn: string } | null;
+  children: { id: string; nameAr: string; nameEn: string; sortOrder: number }[];
+  _count: { motorcycles: number };
+}
+
+export interface CategoryTreeItem extends CategoryResponse {
+  children?: CategoryTreeItem[];
+  _count?: { motorcycles: number };
+}
+
+export interface CategoryFlatItem extends CategoryResponse {
+  depth: number;
+  path: string;
+  _count?: { motorcycles: number };
+}
+
+export const brands = {
+  create: (data: BrandCreate) =>
+    apiFetch<BrandResponse>('/brands', { method: 'POST', body: JSON.stringify(data) }),
+  list: (params?: { isActive?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.isActive !== undefined) q.set('isActive', String(params.isActive));
+    return apiFetch<BrandResponse[]>(`/brands?${q}`);
+  },
+  getById: (id: string) => apiFetch<BrandResponse>(`/brands/${id}`),
+  update: (id: string, data: BrandUpdate) =>
+    apiFetch<BrandResponse>(`/brands/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) => apiFetch<null>(`/brands/${id}`, { method: 'DELETE' }),
+};
+
+export const categories = {
+  create: (data: CategoryCreate) =>
+    apiFetch<CategoryResponse>('/categories', { method: 'POST', body: JSON.stringify(data) }),
+  list: (params?: { isActive?: boolean; flat?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.isActive !== undefined) q.set('isActive', String(params.isActive));
+    if (params?.flat !== undefined) q.set('flat', String(params.flat));
+    return apiFetch<CategoryTreeItem[] | CategoryFlatItem[]>(`/categories?${q}`);
+  },
+  getById: (id: string) => apiFetch<CategoryWithRelations>(`/categories/${id}`),
+  update: (id: string, data: CategoryUpdate) =>
+    apiFetch<CategoryResponse>(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) => apiFetch<null>(`/categories/${id}`, { method: 'DELETE' }),
+};
+
+export const upload = {
+  uploadFile: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiFetch<{ url: string; filename: string; size: number; mimeType: string }>('/upload', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+};
+
+// ─────────────────────────────────────────────────────────
+// Customers
+// ─────────────────────────────────────────────────────────
+export interface Customer {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  nationalId?: string; // Masked in list views
+  isActive: boolean;
+  orderCount?: number;
+  lastOrderDate?: string;
+  createdAt: string;
+}
+
+export interface CustomerDetail extends Customer {
+  notes?: string;
+  addresses: Address[];
+  stats?: CustomerStats;
+}
+
+export interface Address {
+  id: string;
+  label: string;
+  addressLine: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  country: string;
+  isDefault: boolean;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface CustomerStats {
+  totalOrders: number;
+  totalSpent: number;
+  lastOrderDate?: string;
+  activeReservations: number;
+  activeInstallmentPlans: number;
+}
+
+export interface CustomerSummary {
+  customerId: string;
+  totalOrders: number;
+  completedOrders: number;
+  cancelledOrders: number;
+  totalSpent: number;
+  totalPaid: number;
+  outstandingBalance: number;
+  activeReservations: number;
+  expiredReservations: number;
+  activeInstallmentPlans: number;
+  overdueInstallments: number;
+  lastOrderDate?: string;
+  lastPaymentDate?: string;
+}
+
+export interface CustomerInput {
+  name: string;
+  phone: string;
+  email?: string;
+  nationalId?: string;
+  notes?: string;
+}
+
+export const customers = {
+  list: (params?: {
+    search?: string;
+    page?: number;
+    limit?: number;
+    hasEmail?: boolean;
+    hasNationalId?: boolean;
+    isActive?: boolean;
+    startDate?: string;
+    endDate?: string;
+    sort?: 'name' | 'createdAt';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.hasEmail !== undefined) q.set('hasEmail', String(params.hasEmail));
+    if (params?.hasNationalId !== undefined) q.set('hasNationalId', String(params.hasNationalId));
+    if (params?.isActive !== undefined) q.set('isActive', String(params.isActive));
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<Customer>>(`/customers?${q}`);
+  },
+  search: (params: { q: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    q.set('q', params.q);
+    if (params.limit) q.set('limit', String(params.limit));
+    return apiFetch<{ id: string; name: string; phone: string; email?: string; nationalId?: string; defaultAddress?: { id: string; addressLine: string; city?: string } }[]>(`/customers/search?${q}`);
+  },
+  get: (id: string) => apiFetch<CustomerDetail>(`/customers/${id}`),
+  getSummary: (id: string) => apiFetch<CustomerSummary>(`/customers/${id}/summary`),
+  create: (data: CustomerInput) =>
+    apiFetch<CustomerDetail>('/customers', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<CustomerInput>) =>
+    apiFetch<CustomerDetail>(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deactivate: (id: string, reason: string) =>
+    apiFetch<null>(`/customers/${id}/deactivate`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  reactivate: (id: string) =>
+    apiFetch<null>(`/customers/${id}/reactivate`, { method: 'POST' }),
+  getInvoices: (id: string, params?: { status?: InvoiceStatus; page?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<InvoiceListItem>>(`/customers/${id}/invoices?${q}`);
+  },
+  getPayments: (id: string, params?: { page?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<PaymentListItem>>(`/customers/${id}/payments?${q}`);
+  },
+  getFinancialSummary: (id: string) =>
+    apiFetch<CustomerFinancialSummary>(`/customers/${id}/financial-summary`),
+};
+
+// ─────────────────────────────────────────────────────────
+// Orders
+// ─────────────────────────────────────────────────────────
+export type OrderStatus = 'draft' | 'confirmed' | 'processing' | 'awaiting_delivery' | 'completed' | 'cancelled' | 'refunded';
+
+export interface OrderItem {
+  id: string;
+  motorcycleId: string;
+  unitPrice: number;
+  discount: number;
+  motorcycle: {
+    id: string;
+    vin: string;
+    model: string;
+    year: number;
+    color?: string;
+    brand: { nameEn: string; nameAr: string };
+    currentStatus: string;
+  };
+}
+
+export interface Order {
+  id: string;
+  orderNumber: string;
+  customerId: string;
+  branchId: string;
+  status: OrderStatus;
+  totalAmount: number;
+  discount: number;
+  netAmount: number;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrderListItem {
+  id: string;
+  orderNumber: string;
+  customer: { id: string; name: string; phone: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  status: OrderStatus;
+  itemCount: number;
+  totalAmount: number;
+  discount: number;
+  netAmount: number;
+  createdAt: string;
+}
+
+export interface OrderDetail extends Order {
+  customer: {
+    id: string;
+    name: string;
+    phone: string;
+    email?: string;
+    defaultAddress?: { addressLine: string; city?: string };
+  };
+  branch: { id: string; nameEn: string; nameAr: string };
+  user: { id: string; name: string };
+  items: OrderItem[];
+}
+
+export interface OrderHistoryEntry {
+  id: string;
+  action: string;
+  before?: { status?: OrderStatus };
+  after: { status: OrderStatus };
+  user: { id: string; name: string };
+  reason?: string;
+  createdAt: string;
+}
+
+export const orders = {
+  list: (params?: {
+    search?: string;
+    status?: OrderStatus;
+    branchId?: string;
+    customerId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+    sort?: 'createdAt' | 'netAmount' | 'orderNumber';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<OrderListItem>>(`/orders?${q}`);
+  },
+  get: (id: string) => apiFetch<OrderDetail>(`/orders/${id}`),
+  getHistory: (id: string) => apiFetch<OrderHistoryEntry[]>(`/orders/${id}/history`),
+  changeStatus: (id: string, status: OrderStatus, reason?: string) =>
+    apiFetch<OrderDetail>(`/orders/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status, reason }),
+    }),
+  cancel: (id: string, reason?: string) =>
+    apiFetch<OrderDetail>(`/orders/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Purchases
+// ─────────────────────────────────────────────────────────
+export type PurchaseStatus = 'draft' | 'ordered' | 'partially_received' | 'received' | 'cancelled';
+
+export interface PurchaseItem {
+  id: string;
+  model: string;
+  vin?: string;
+  quantity: number;
+  unitCost: number;
+  receivedAt?: string;
+  motorcycleId?: string;
+}
+
+export interface Purchase {
+  id: string;
+  purchaseNumber: string;
+  supplierId: string;
+  supplier?: { name: string };
+  branchId: string;
+  status: PurchaseStatus;
+  totalAmount: string;
+  orderedAt?: string;
+  receivedAt?: string;
+  createdAt: string;
+  items: PurchaseItem[];
+}
+
+export interface PurchaseCreateInput {
+  supplierId: string;
+  branchId: string;
+  items: { model: string; quantity: number; unitCost: number; vin?: string }[];
+  notes?: string;
+}
+
+export interface ReceiveItemInput {
+  purchaseItemId: string;
+  vin: string;
+}
+
+export const purchases = {
+  list: (params?: { status?: string; page?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<Purchase>>(`/purchases?${q}`);
+  },
+  get: (id: string) => apiFetch<Purchase>(`/purchases/${id}`),
+  create: (data: PurchaseCreateInput) =>
+    apiFetch<Purchase>('/purchases', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<PurchaseCreateInput>) =>
+    apiFetch<Purchase>(`/purchases/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  order: (id: string) =>
+    apiFetch<Purchase>(`/purchases/${id}/order`, { method: 'POST' }),
+  cancel: (id: string) =>
+    apiFetch<Purchase>(`/purchases/${id}/cancel`, { method: 'POST' }),
+  delete: (id: string): Promise<void> => apiFetch<void>(`/purchases/${id}`, { method: 'DELETE' }),
+  receive: (id: string, items: ReceiveItemInput[]) =>
+    apiFetch<Purchase>(`/purchases/${id}/receive`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Stock Transfers
+// ─────────────────────────────────────────────────────────
+export type TransferStatus = 'initiated' | 'in_transit' | 'received' | 'cancelled';
+
+export interface TransferMotorcycle {
+  id: string;
+  vin: string;
+  model: string;
+  currentStatus: string;
+  branchId: string;
+  brand: { nameEn: string; nameAr: string };
+}
+
+export interface TransferListItem {
+  id: string;
+  transferNumber: string;
+  fromBranch: Branch;
+  toBranch: Branch;
+  motorcycleCount: number;
+  status: TransferStatus;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface TransferDetail extends Omit<TransferListItem, 'motorcycleCount'> {
+  user: { id: string; name: string };
+  notes?: string;
+  motorcycles: TransferMotorcycle[];
+}
+
+export interface CreateTransferInput {
+  fromBranchId?: string;
+  toBranchId: string;
+  motorcycleIds: string[];
+  notes?: string;
+}
+
+export type MotorcycleStatus = 'in_transit' | 'available' | 'reserved' | 'sold' | 'in_transfer' | 'maintenance' | 'returned';
+
+export interface MotorcycleInput {
+  vin: string;
+  engineNumber?: string;
+  model: string;
+  year: number;
+  color?: string;
+  engineSize?: string;
+  descriptionAr?: string;
+  descriptionEn?: string;
+  price: number;
+  costPrice: number;
+  brandId: string;
+  categoryId: string;
+  branchId: string;
+  images?: string[];
+  status?: MotorcycleStatus;
+}
+
+export interface MotorcycleUpdate {
+  model?: string;
+  year?: number;
+  color?: string;
+  engineNumber?: string;
+  engineSize?: string;
+  descriptionAr?: string;
+  descriptionEn?: string;
+  price?: number;
+  costPrice?: number;
+  brandId?: string;
+  categoryId?: string;
+  images?: string[];
+}
+
+export interface MotorcycleListQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  brandId?: string;
+  categoryId?: string;
+  branchId?: string;
+  status?: MotorcycleStatus;
+  minPrice?: number;
+  maxPrice?: number;
+  minYear?: number;
+  maxYear?: number;
+  color?: string;
+  sort?: 'price' | 'year' | 'createdAt' | 'model';
+  order?: 'asc' | 'desc';
+}
+
+export interface MotorcycleResponse {
+  id: string;
+  vin: string;
+  engineNumber: string | null;
+  model: string;
+  year: number;
+  color: string | null;
+  engineSize: string | null;
+  descriptionAr: string | null;
+  descriptionEn: string | null;
+  price: number;
+  costPrice: number;
+  status: MotorcycleStatus;
+  images: string[];
+  branchId: string;
+  brandId: string;
+  categoryId: string;
+  createdAt: string;
+  updatedAt: string;
+  brand?: { id: string; nameAr: string; nameEn: string; logo?: string | null };
+  category?: { id: string; nameAr: string; nameEn: string; sortOrder?: number };
+  branch?: Branch;
+}
+
+export interface MotorcycleListItem {
+  id: string;
+  vin: string;
+  model: string;
+  year: number;
+  price: number;
+  status: MotorcycleStatus;
+  branchId: string;
+  brand: { nameEn: string; nameAr: string };
+  category: { nameEn: string; nameAr: string };
+  branch: { nameEn: string; nameAr: string };
+}
+
+export const transfers = {
+  list: (params?: { page?: number; limit?: number; search?: string; fromBranchId?: string; toBranchId?: string; status?: TransferStatus; startDate?: string; endDate?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.search) q.set('search', params.search);
+    if (params?.fromBranchId) q.set('fromBranchId', params.fromBranchId);
+    if (params?.toBranchId) q.set('toBranchId', params.toBranchId);
+    if (params?.status) q.set('status', params.status);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    return apiFetch<PaginatedResult<TransferListItem>>(`/transfers?${q}`);
+  },
+  get: (id: string) => apiFetch<TransferDetail>(`/transfers/${id}`),
+  create: (data: CreateTransferInput) => apiFetch<TransferDetail>('/transfers', { method: 'POST', body: JSON.stringify(data) }),
+  ship: (id: string) => apiFetch<TransferDetail>(`/transfers/${id}/ship`, { method: 'POST' }),
+  receive: (id: string) => apiFetch<TransferDetail>(`/transfers/${id}/receive`, { method: 'POST' }),
+  cancel: (id: string) => apiFetch<TransferDetail>(`/transfers/${id}/cancel`, { method: 'POST' }),
+};
+
+export const motorcycles = {
+  create: (data: MotorcycleInput) =>
+    apiFetch<MotorcycleResponse>('/motorcycles', { method: 'POST', body: JSON.stringify(data) }),
+  list: (params?: MotorcycleListQuery) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.search) q.set('search', params.search);
+    if (params?.brandId) q.set('brandId', params.brandId);
+    if (params?.categoryId) q.set('categoryId', params.categoryId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.status) q.set('status', params.status);
+    if (params?.minPrice !== undefined) q.set('minPrice', String(params.minPrice));
+    if (params?.maxPrice !== undefined) q.set('maxPrice', String(params.maxPrice));
+    if (params?.minYear !== undefined) q.set('minYear', String(params.minYear));
+    if (params?.maxYear !== undefined) q.set('maxYear', String(params.maxYear));
+    if (params?.color) q.set('color', params.color);
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<MotorcycleListItem>>(`/motorcycles?${q}`);
+  },
+  getById: (id: string) => apiFetch<MotorcycleResponse>(`/motorcycles/${id}`),
+  update: (id: string, data: MotorcycleUpdate) =>
+    apiFetch<MotorcycleResponse>(`/motorcycles/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  updateStatus: (id: string, status: MotorcycleStatus, reason?: string) =>
+    apiFetch<{ id: string; vin: string; model: string; status: MotorcycleStatus; previousStatus: MotorcycleStatus; updatedAt: string }>(`/motorcycles/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, reason }),
+    }),
+  delete: (id: string) => apiFetch<null>(`/motorcycles/${id}`, { method: 'DELETE' }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Invoices & Payments
+// ─────────────────────────────────────────────────────────
+export type InvoiceStatus = 'draft' | 'issued' | 'partially_paid' | 'paid' | 'overpaid' | 'cancelled' | 'refunded';
+export type PaymentStatus = 'pending' | 'completed' | 'failed' | 'cancelled' | 'refunded' | 'partially_refunded';
+export type PaymentMethod = 'cash' | 'card' | 'bank_transfer' | 'cheque';
+export type RefundStatus = 'pending' | 'completed' | 'failed' | 'cancelled';
+
+export interface InvoiceItem {
+  id: string;
+  motorcycleId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  totalPrice: number;
+  motorcycle?: {
+    id: string;
+    vin: string;
+    model: string;
+    year: number;
+    color?: string;
+    brand: { nameEn: string; nameAr: string };
+  };
+}
+
+export interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  customerId: string;
+  orderId?: string;
+  reservationId?: string;
+  branchId: string;
+  userId: string;
+  status: InvoiceStatus;
+  totalAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  address?: string | null;
+  issueDate?: string;
+  dueDate?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InvoiceListItem extends Invoice {
+  customer: { id: string; name: string; phone: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  user: { id: string; name: string };
+  itemCount: number;
+}
+
+export interface InvoiceDetail extends Invoice {
+  customer: {
+    id: string;
+    name: string;
+    phone: string;
+    email?: string;
+  };
+  branch: { id: string; nameEn: string; nameAr: string };
+  user: { id: string; name: string };
+  items: InvoiceItem[];
+  payments?: Payment[];
+  order?: { id: string; orderNumber: string; status: string };
+  reservation?: { id: string; reservationNumber: string; status: string };
+}
+
+export interface Payment {
+  id: string;
+  paymentReference: string;
+  invoiceId: string;
+  customerId: string;
+  branchId: string;
+  userId: string;
+  amount: number;
+  method: PaymentMethod;
+  status: PaymentStatus;
+  reference?: string;
+  externalTransactionId?: string;
+  providerId?: string;
+  idempotencyKey: string;
+  cashAmountReceived?: number;
+  cashChange?: number;
+  confirmedAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PaymentListItem extends Payment {
+  customer: { id: string; name: string; phone: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  user: { id: string; name: string };
+  invoice: { id: string; invoiceNumber: string; totalAmount: number };
+}
+
+export interface PaymentDetail extends Payment {
+  customer: { id: string; name: string; phone: string; email?: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  user: { id: string; name: string };
+  invoice: InvoiceListItem;
+  allocations?: PaymentAllocation[];
+  refunds?: Refund[];
+}
+
+export interface PaymentAllocation {
+  id: string;
+  paymentId: string;
+  invoiceId: string;
+  amount: number;
+  createdAt: string;
+}
+
+export interface Refund {
+  id: string;
+  refundReference: string;
+  paymentId: string;
+  amount: number;
+  reason: string;
+  method: PaymentMethod;
+  status: string;
+  processedBy: string;
+  processedAt?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RefundListItem extends Refund {
+  payment: {
+    id: string;
+    paymentReference: string;
+    amount: number;
+    customer: { id: string; name: string; phone: string };
+    invoice: { id: string; invoiceNumber: string };
+  };
+  processedByUser: { id: string; name: string };
+}
+
+export interface RefundDetail extends Refund {
+  payment: PaymentDetail;
+  processedByUser: { id: string; name: string };
+}
+
+export interface CreatePaymentInput {
+  idempotencyKey: string;
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  reference?: string;
+  cashDetails?: {
+    amountReceived: number;
+    change: number;
+  };
+  notes?: string;
+}
+
+export interface CreateRefundInput {
+  paymentId: string;
+  amount: number;
+  reason: string;
+  method: PaymentMethod;
+  notes?: string;
+}
+
+export interface CustomerFinancialSummary {
+  totalInvoiced: number;
+  totalPaid: number;
+  totalRefunded: number;
+  outstandingBalance: number;
+  invoiceCount: number;
+  paymentCount: number;
+}
+
+export const invoices = {
+  list: (params?: {
+    search?: string;
+    status?: InvoiceStatus;
+    customerId?: string;
+    branchId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+    sort?: 'createdAt' | 'totalAmount' | 'invoiceNumber';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.startDate) q.set('fromDate', params.startDate);
+    if (params?.endDate) q.set('toDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<InvoiceListItem>>(`/invoices?${q}`);
+  },
+  get: (id: string) => apiFetch<InvoiceDetail>(`/invoices/${id}`),
+  issue: (id: string) =>
+    apiFetch<InvoiceDetail>(`/invoices/${id}/issue`, { method: 'POST' }),
+  cancel: (id: string, reason?: string) =>
+    apiFetch<InvoiceDetail>(`/invoices/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+export const payments = {
+  list: (params?: {
+    search?: string;
+    status?: PaymentStatus;
+    method?: PaymentMethod;
+    customerId?: string;
+    invoiceId?: string;
+    branchId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+    sort?: 'createdAt' | 'amount' | 'paymentReference';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    if (params?.method) q.set('method', params.method);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.invoiceId) q.set('invoiceId', params.invoiceId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<PaymentListItem>>(`/payments?${q}`);
+  },
+  get: (id: string) => apiFetch<PaymentDetail>(`/payments/${id}`),
+  create: (data: CreatePaymentInput) =>
+    apiFetch<PaymentDetail>('/payments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  confirm: (id: string, externalTransactionId?: string, notes?: string) =>
+    apiFetch<PaymentDetail>(`/payments/${id}/confirm`, {
+      method: 'PATCH',
+      body: JSON.stringify({ externalTransactionId, notes }),
+    }),
+  cancel: (id: string, reason: string) =>
+    apiFetch<PaymentDetail>(`/payments/${id}/cancel`, {
+      method: 'PATCH',
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+export const refunds = {
+  list: (params?: {
+    search?: string;
+    paymentId?: string;
+    customerId?: string;
+    branchId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.paymentId) q.set('paymentId', params.paymentId);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.startDate) q.set('fromDate', params.startDate);
+    if (params?.endDate) q.set('toDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<RefundListItem>>(`/refunds?${q}`);
+  },
+  get: (id: string) => apiFetch<RefundDetail>(`/refunds/${id}`),
+  create: (data: CreateRefundInput) =>
+    apiFetch<RefundDetail>('/refunds', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Reservations
+// ─────────────────────────────────────────────────────────
+export type ReservationStatus = 'active' | 'expired' | 'cancelled' | 'converted';
+export type ReservationSource = 'ecommerce' | 'pos';
+
+export interface ReservationListItem {
+  id: string;
+  reservationNumber: string;
+  customer: { id: string; name: string; phone: string };
+  motorcycle: {
+    id: string;
+    vin: string;
+    model: string;
+    year: number;
+    color?: string;
+    brand: { nameEn: string; nameAr: string };
+  };
+  branch: { id: string; nameEn: string; nameAr: string };
+  status: ReservationStatus;
+  source: ReservationSource;
+  totalPrice: number;
+  depositAmount: number;
+  remainingAmount: number;
+  expiresAt?: string;
+  daysUntilExpiry?: number;
+  createdAt: string;
+}
+
+export interface ReservationDetail extends Omit<ReservationListItem, 'customer'> {
+  customer: {
+    id: string;
+    name: string;
+    phone: string;
+    email?: string;
+    defaultAddress?: {
+      addressLine: string;
+      city?: string;
+    };
+  };
+  user: { id: string; name: string };
+  notes?: string;
+  cancelReason?: string;
+  convertedOrder?: { id: string; orderNumber: string; status: string };
+  pricingSnapshot: {
+    basePrice: number;
+    vat: number;
+    discount: number;
+    totalPrice: number;
+  };
+  statusHistory?: ReservationHistoryEntry[];
+}
+
+export interface ReservationHistoryEntry {
+  id: string;
+  action: string;
+  before?: { status?: ReservationStatus; expiresAt?: string };
+  after: { status?: ReservationStatus; expiresAt?: string };
+  user: { id: string; name: string };
+  reason?: string;
+  createdAt: string;
+}
+
+export const reservations = {
+  list: (params?: {
+    search?: string;
+    status?: ReservationStatus;
+    branchId?: string;
+    customerId?: string;
+    expiringSoon?: boolean;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+    sort?: 'createdAt' | 'expiresAt' | 'reservationNumber';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.expiringSoon !== undefined) q.set('expiringSoon', String(params.expiringSoon));
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<ReservationListItem>>(`/reservations?${q}`);
+  },
+  get: (id: string) => apiFetch<ReservationDetail>(`/reservations/${id}`),
+  getHistory: (id: string) => apiFetch<ReservationHistoryEntry[]>(`/reservations/${id}/history`),
+  extend: (id: string, expiresAt: string, reason?: string) =>
+    apiFetch<ReservationDetail>(`/reservations/${id}/extend`, {
+      method: 'POST',
+      body: JSON.stringify({ expiresAt, reason }),
+    }),
+  cancel: (id: string, reason: string) =>
+    apiFetch<ReservationDetail>(`/reservations/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  convert: (id: string, notes?: string) =>
+    apiFetch<{ reservation: ReservationDetail; order: { id: string; orderNumber: string } }>(`/reservations/${id}/convert`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Financing Contracts (TASK-012, TASK-013)
+// ─────────────────────────────────────────────────────────
+export type FinancingContractStatus = 'active' | 'completed' | 'defaulted' | 'cancelled';
+export type InstallmentStatus = 'upcoming' | 'due' | 'paid' | 'overdue';
+export type InstallmentFrequency = 'monthly' | 'quarterly';
+
+export interface FinancingContractListItem {
+  id: string;
+  contractNumber: string;
+  customer: { id: string; name: string; phone: string };
+  order: { id: string; orderNumber: string; status: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  totalAmount: number;
+  downPayment: number;
+  financingAmount: number;
+  numberOfInstallments: number;
+  interestRate: number;
+  startDate: string;
+  status: FinancingContractStatus;
+  createdAt: string;
+  approvedAt?: string;
+  completedAt?: string;
+  installments?: Installment[];
+}
+
+export interface Installment {
+  id: string;
+  installmentNumber: number;
+  dueDate: string;
+  amount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  status: InstallmentStatus;
+  paidAt?: string;
+}
+
+export interface FinancingContractDetail extends FinancingContractListItem {
+  creator: { id: string; name: string };
+  approver?: { id: string; name: string };
+  installments: Installment[];
+  notes?: string;
+}
+
+export interface CreateFinancingContractInput {
+  orderId: string;
+  customerId: string;
+  totalAmount: number;
+  downPayment: number;
+  numberOfInstallments: number;
+  interestRate?: number;
+  startDate: string;
+  installmentFrequency?: InstallmentFrequency;
+}
+
+export interface InstallmentPaymentInput {
+  amount: number;
+  method: PaymentMethod;
+  reference?: string;
+  idempotencyKey: string;
+  notes?: string;
+}
+
+export interface FinancingSummary {
+  activeContracts: number;
+  totalFinanced: number;
+  totalPaid: number;
+  totalRemaining: number;
+  nextInstallment: {
+    id: string;
+    dueDate: string;
+    amount: number;
+    contractId: string;
+  } | null;
+  overdueInstallments: number;
+  overdueAmount: number;
+}
+
+export interface SettlementInput {
+  paymentMethod: PaymentMethod;
+  reference?: string;
+  notes?: string;
+}
+
+export const financingContracts = {
+  list: (params?: {
+    search?: string;
+    status?: FinancingContractStatus;
+    customerId?: string;
+    branchId?: string;
+    contractNumber?: string;
+    startDateFrom?: string;
+    startDateTo?: string;
+    page?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.contractNumber) q.set('contractNumber', params.contractNumber);
+    if (params?.startDateFrom) q.set('startDateFrom', params.startDateFrom);
+    if (params?.startDateTo) q.set('startDateTo', params.startDateTo);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<FinancingContractListItem>>(`/financing-contracts?${q}`);
+  },
+  get: (id: string) => apiFetch<FinancingContractDetail>(`/financing-contracts/${id}`),
+  create: (data: CreateFinancingContractInput) =>
+    apiFetch<FinancingContractDetail>('/financing-contracts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  approve: (id: string, notes?: string) =>
+    apiFetch<FinancingContractDetail>(`/financing-contracts/${id}/approve`, {
+      method: 'PATCH',
+      body: JSON.stringify({ notes }),
+    }),
+  updateStatus: (id: string, status: FinancingContractStatus, notes?: string) =>
+    apiFetch<FinancingContractDetail>(`/financing-contracts/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, notes }),
+    }),
+  settle: (id: string, data: SettlementInput) =>
+    apiFetch<{
+      contract: FinancingContractDetail;
+      payment: { id: string; amount: number; method: string; reference?: string; receivedAt: string };
+      settledAmount: number;
+      settledInstallments: number;
+    }>(`/financing-contracts/${id}/settle`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
+export const installments = {
+  get: (id: string) =>
+    apiFetch<Installment & { contract: FinancingContractListItem }>(`/installments/${id}`),
+  listByContract: (contractId: string) =>
+    apiFetch<Installment[]>(`/installments/contract/${contractId}`),
+  createPayment: (installmentId: string, data: InstallmentPaymentInput) =>
+    apiFetch<Payment>(`/installments/${installmentId}/payments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  sendWhatsApp: (installmentId: string) =>
+    apiFetch<{ phone: string; message: string }>(`/installments/${installmentId}/send-whatsapp`, { method: 'POST' }),
+  updateStatuses: () =>
+    apiFetch<{ updated: number }>('/installments/status-update', {
+      method: 'POST',
+    }),
+};
+
+export const customerFinancing = {
+  getSummary: (customerId: string) =>
+    apiFetch<FinancingSummary>(`/customers/${customerId}/financing-summary`),
+  getContracts: (customerId: string, params?: {
+    status?: FinancingContractStatus;
+    page?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<FinancingContractListItem>>(`/customers/${customerId}/financing-contracts?${q}`);
+  },
+  getInstallments: (customerId: string, params?: {
+    status?: InstallmentStatus;
+    page?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<PaginatedResult<Installment & { contract: { id: string; contractNumber: string } }>>(`/customers/${customerId}/installments?${q}`);
+  },
+  listCompanies: () => apiFetch<FinancingCompany[]>('/admin/financing-companies'),
+  createCompany: (data: Partial<FinancingCompany>) => apiFetch<FinancingCompany>('/admin/financing-companies', { method: 'POST', body: JSON.stringify(data) }),
+  updateCompany: (id: string, data: Partial<FinancingCompany>) => apiFetch<FinancingCompany>(`/admin/financing-companies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCompany: (id: string) => apiFetch<void>(`/admin/financing-companies/${id}`, { method: 'DELETE' }),
+  listRequests: (status?: string) => {
+    const q = new URLSearchParams();
+    if (status) q.set('status', status);
+    return apiFetch<InstallmentRequest[]>(`/admin/installment-requests?${q}`);
+  },
+  reviewRequest: (id: string, data: { status: 'approved' | 'rejected'; rejectionReason?: string }) => apiFetch<InstallmentRequest>(`/admin/installment-requests/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  getRequest: (id: string) => apiFetch<InstallmentRequest>(`/admin/installment-requests/${id}`),
+  updateRequest: (id: string, data: { buyerName?: string; buyerPhone?: string; financingCompanyId?: string; downPayment?: number }) => apiFetch<InstallmentRequest>(`/admin/installment-requests/${id}/details`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteRequest: (id: string) => apiFetch<InstallmentRequest>(`/admin/installment-requests/${id}`, { method: 'DELETE' }),
+  getWhatsAppMessage: (id: string) => apiFetch<{ phone: string; message: string }>(`/admin/installment-requests/${id}/whatsapp`),
+  listDurations: () => apiFetch<InstallmentDuration[]>('/admin/installment-durations'),
+  createDuration: (data: Partial<InstallmentDuration>) => apiFetch<InstallmentDuration>('/admin/installment-durations', { method: 'POST', body: JSON.stringify(data) }),
+  updateDuration: (id: string, data: Partial<InstallmentDuration>) => apiFetch<InstallmentDuration>(`/admin/installment-durations/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteDuration: (id: string) => apiFetch<void>(`/admin/installment-durations/${id}`, { method: 'DELETE' }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Letters (SPEC-010)
+// ─────────────────────────────────────────────────────────
+export type LetterStatus = 'issued' | 'received' | 'not_received';
+export type LetterType = 'receipt' | 'delivery';
+
+export interface LetterListItem {
+  id: string;
+  letterNumber: string;
+  type: LetterType;
+  status: LetterStatus;
+  customer: { id: string; name: string; phone: string };
+  order?: { id: string; orderNumber: string; status: string };
+  financingContract?: { id: string; contractNumber: string; status: string };
+  branch: { id: string; nameEn: string; nameAr: string };
+  subject: string;
+  issueDate?: string;
+  sentDate?: string;
+  receivedDate?: string;
+  expiryDate?: string;
+  createdAt: string;
+}
+
+export interface LetterDetail extends LetterListItem {
+  creator: { id: string; name: string };
+  issuer?: { id: string; name: string };
+  receiver?: { id: string; name: string };
+  content: string;
+  notes?: string;
+  documents: LetterDocument[];
+}
+
+export interface LetterDocument {
+  id: string;
+  name: string;
+  language: 'en' | 'ar';
+  url: string;
+  generatedAt: string;
+}
+
+export interface CreateLetterInput {
+  type: LetterType;
+  customerId: string;
+  motorcycleId: string;
+  orderId?: string;
+  financingContractId?: string;
+  subject: string;
+  content: string;
+  expectedDeliveryDate?: string;
+  issueDate?: string;
+  expiryDate?: string;
+  notes?: string;
+}
+
+export interface LetterHistoryEntry {
+  id: string;
+  action: string;
+  before?: { status?: LetterStatus };
+  after: { status?: LetterStatus };
+  user: { id: string; name: string };
+  reason?: string;
+  createdAt: string;
+}
+
+export const letters = {
+  list: (params?: {
+    search?: string;
+    type?: LetterType;
+    status?: LetterStatus;
+    customerId?: string;
+    orderId?: string;
+    financingContractId?: string;
+    branchId?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+    sort?: 'createdAt' | 'letterNumber' | 'issueDate';
+    order?: 'asc' | 'desc';
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.type) q.set('type', params.type);
+    if (params?.status) q.set('status', params.status);
+    if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.orderId) q.set('orderId', params.orderId);
+    if (params?.financingContractId) q.set('financingContractId', params.financingContractId);
+    if (params?.branchId) q.set('branchId', params.branchId);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.order) q.set('order', params.order);
+    return apiFetch<PaginatedResult<LetterListItem>>(`/letters?${q}`);
+  },
+  get: async (id: string) => {
+    const letter = await apiFetch<LetterDetail & { issuedAt?: string }>(`/letters/${id}`);
+    return {
+      ...letter,
+      issueDate: letter.issueDate ?? letter.issuedAt,
+      subject: letter.subject ?? letter.letterNumber,
+      content: letter.content ?? letter.notes ?? '',
+    };
+  },
+  create: (data: CreateLetterInput) =>
+    apiFetch<LetterDetail>('/letters', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: Partial<CreateLetterInput>) =>
+    apiFetch<LetterDetail>(`/letters/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  confirmReceipt: (id: string, notes?: string) =>
+    apiFetch<LetterDetail>(`/letters/${id}/confirm-receipt`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    }),
+  markNotReceived: (id: string, reason: string) =>
+    apiFetch<LetterDetail>(`/letters/${id}/record-non-receipt`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  getHistory: async (id: string) => {
+    const history = await apiFetch<Array<LetterHistoryEntry & {
+      actor?: { id: string; name: string };
+      fromStatus?: string;
+      toStatus?: string;
+    }>>(`/letters/${id}/history`);
+    return history.map((entry) => ({
+      ...entry,
+      user: entry.user ?? entry.actor ?? { id: '', name: 'Unknown user' },
+      before: entry.before ?? (entry.fromStatus ? { status: entry.fromStatus as LetterStatus } : undefined),
+      after: entry.after ?? (entry.toStatus ? { status: entry.toStatus as LetterStatus } : {}),
+    }));
+  },
+  generateDocument: (id: string, language: 'en' | 'ar') =>
+    apiFetch<{ id: string; url?: string }>(`/letters/${id}/documents`, {
+      method: 'POST',
+      body: JSON.stringify({ documentType: language === 'ar' ? 'receipt' : 'delivery' }),
+    }),
+};
+
+// ─────────────────────────────────────────────────────────
+// Reports (SPEC-011)
+// ─────────────────────────────────────────────────────────
+export interface ExecutiveDashboard {
+  sales: {
+    totalRevenue: number;
+    orderCount: number;
+    averageOrderValue: number;
+    growth: number;
+    topMotorcycles: Array<{ model: string; brand: string; count: number; revenue: number }>;
+  };
+  revenue: {
+    grossRevenue: number;
+    collectedAmount: number;
+    outstandingAmount: number;
+    refundAmount: number;
+    netRevenue: number;
+  };
+  inventory: {
+    totalMotorcycles: number;
+    available: number;
+    reserved: number;
+    sold: number;
+    inTransit: number;
+    inventoryValue: number;
+  };
+  customers: {
+    totalActive: number;
+    newCustomers: number;
+    withActiveOrders: number;
+    withOutstandingBalance: number;
+    retentionRate: number;
+  };
+  financing: {
+    activeContracts: number;
+    totalFinanced: number;
+    collectedAmount: number;
+    outstandingBalance: number;
+    overdueCount: number;
+    collectionRate: number;
+  };
+  period: { start: string; end: string };
+  branches: string[];
+}
+
+export interface OperationalDashboard {
+  reservations: Record<string, number>;
+  recentOrders: Array<{
+    id: string;
+    orderNumber: string;
+    customerName: string;
+    amount: number;
+    status: OrderStatus;
+    createdAt: string;
+  }>;
+  recentPayments: Array<{
+    id: string;
+    paymentReference: string;
+    customerName: string;
+    amount: number;
+    method: PaymentMethod;
+    createdAt: string;
+  }>;
+  branchPerformance: Array<Record<string, unknown>>;
+}
+
+export interface SalesSummary {
+  totalSales: number;
+  orderCount: number;
+  averageOrderValue: number;
+  cancelledCount: number;
+  refundedCount: number;
+  byPaymentMethod: Array<{ method: string; amount: number; count: number }>;
+  byBranch: Array<{ branchId: string; branchName: string; amount: number; count: number }>;
+  trends: Array<{ period: string; amount: number; count: number }>;
+}
+
+export interface AgingReport {
+  total: number;
+  buckets: Array<{
+    label: string;
+    days: string;
+    amount: number;
+    count: number;
+    customers: Array<{
+      customerId: string;
+      customerName: string;
+      amount: number;
+      oldestInvoiceDate: string;
+    }>;
+  }>;
+}
+
+export interface InventoryStatus {
+  total: number;
+  byStatus: Array<{ status: string; count: number; value: number }>;
+  byBrand: Array<{ brand: string; count: number; value: number }>;
+  byBranch: Array<{ branchId: string; branchName: string; count: number; value: number }>;
+  averageAge: number;
+}
+
+export const reports = {
+  getExecutiveDashboard: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<ExecutiveDashboard>(`/reports/dashboard/executive?${q}`);
+  },
+  getOperationalDashboard: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<OperationalDashboard>(`/reports/dashboard/operational?${q}`);
+  },
+  getSalesSummary: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string; groupBy?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    if (params?.groupBy) q.set('groupBy', params.groupBy);
+    return apiFetch<SalesSummary>(`/reports/sales/summary?${q}`);
+  },
+  getSalesByDimension: (params: { dimension: string; preset?: string; startDate?: string; endDate?: string; branches?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    q.set('dimension', params.dimension);
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<any[]>(`/reports/sales/by-dimension?${q}`);
+  },
+  getRevenueCollection: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<any>(`/reports/financial/revenue-collection?${q}`);
+  },
+  getAgingReport: (params?: { branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<AgingReport>(`/reports/financial/aging?${q}`);
+  },
+  getInventoryStatus: (params?: { branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<InventoryStatus>(`/reports/inventory/current-status?${q}`);
+  },
+  getInventoryMovement: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<any>(`/reports/inventory/movement?${q}`);
+  },
+  getInstallmentPortfolio: (params?: { branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<any>(`/reports/installments/portfolio?${q}`);
+  },
+  getCustomerAnalytics: (params?: { preset?: string; startDate?: string; endDate?: string; branches?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.preset) q.set('preset', params.preset);
+    if (params?.startDate) q.set('startDate', params.startDate);
+    if (params?.endDate) q.set('endDate', params.endDate);
+    if (params?.branches) q.set('branches', params.branches);
+    return apiFetch<any>(`/reports/customers/analytics?${q}`);
+  },
+};
+
+
+// ─────────────────────────────────────────────────────────
+// Configuration Management (SPEC-013)
+// ─────────────────────────────────────────────────────────
+export interface SystemConfiguration {
+  id: string;
+  configKey: string;
+  configValue: any;
+  dataType: 'string' | 'number' | 'boolean' | 'json' | 'date';
+  category: string;
+  description?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompanyConfiguration {
+  id: string;
+  configKey: string;
+  configValue: any;
+  dataType: string;
+  category: string;
+  description?: string;
+  version: number;
+  isActive: boolean;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  createdAt: string;
+  updatedAt: string;
+  creator: { id: string; name: string; email: string };
+}
+
+export interface BranchConfiguration {
+  id: string;
+  branchId: string;
+  configKey: string;
+  configValue: any;
+  dataType: string;
+  category: string;
+  description?: string;
+  inheritsFromCompany: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  creator: { id: string; name: string };
+}
+
+export interface FeatureFlag {
+  id: string;
+  flagKey: string;
+  flagName: string;
+  description?: string;
+  scope: 'system' | 'branch' | 'user';
+  isEnabled: boolean;
+  rolloutPercentage: number;
+  targetBranches?: string[];
+  environment: string;
+  createdAt: string;
+  updatedAt: string;
+  creator?: { id: string; name: string; email: string };
+}
+
+export interface DocumentNumbering {
+  id: string;
+  documentType: string;
+  branchId?: string;
+  prefix?: string;
+  includeBranchCode: boolean;
+  includeYear: boolean;
+  sequenceLength: number;
+  currentSequence: number;
+  resetPolicy: 'never' | 'yearly' | 'monthly';
+  lastResetDate?: string;
+  createdAt: string;
+  updatedAt: string;
+  branch?: { id: string; nameEn: string; nameAr: string };
+}
+
+export interface WorkingHours {
+  id: string;
+  branchId: string;
+  dayOfWeek: number;
+  isClosed: boolean;
+  openTime?: string;
+  closeTime?: string;
+  effectiveFrom: string;
+  effectiveTo?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Holiday {
+  id: string;
+  holidayName: string;
+  holidayDate: string;
+  scope: 'system' | 'branch';
+  branchId?: string;
+  isRecurring: boolean;
+  recurrencePattern?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  creator?: { id: string; name: string };
+  branch?: { id: string; nameEn: string; nameAr: string };
+}
+
+export interface ConfigurationAuditEntry {
+  id: string;
+  configType: string;
+  configKey: string;
+  branchId?: string;
+  previousValue?: any;
+  newValue: any;
+  changeReason?: string;
+  changedBy: string;
+  changeTimestamp: string;
+  ipAddress?: string;
+  userAgent?: string;
+  changer: { id: string; name: string; email: string };
+  branch?: { id: string; nameEn: string; nameAr: string };
+}
+
+export interface UpdateConfigurationInput {
+  configurations: Array<{
+    configKey: string;
+    configValue: any;
+    reason?: string;
+    effectiveFrom?: string;
+    effectiveTo?: string;
+  }>;
+}
+
+export interface FeatureFlagUpdate {
+  isEnabled?: boolean;
+  rolloutPercentage?: number;
+  targetBranches?: string[];
+  reason?: string;
+}
+
+export interface DocumentNumberingUpdate {
+  prefix?: string;
+  includeBranchCode?: boolean;
+  includeYear?: boolean;
+  sequenceLength?: number;
+  resetPolicy?: 'never' | 'yearly' | 'monthly';
+  reason?: string;
+}
+
+export interface ResetNumberingInput {
+  newStartingNumber: number;
+  confirmed: boolean;
+  reason: string;
+}
+
+export interface WorkingHoursUpdate {
+  dayOfWeek: number;
+  isClosed?: boolean;
+  openTime?: string;
+  closeTime?: string;
+  effectiveFrom: string;
+  effectiveTo?: string;
+}
+
+export interface CreateHolidayInput {
+  holidayName: string;
+  holidayDate: string;
+  scope: 'system' | 'branch';
+  branchId?: string;
+  isRecurring?: boolean;
+  recurrencePattern?: string;
+}
+
+export const configuration = {
+  // System Configuration
+  getSystemConfig: (params?: { category?: string; keys?: string[]; include_inactive?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.category) q.set('category', params.category);
+    if (params?.keys) params.keys.forEach(k => q.append('keys', k));
+    if (params?.include_inactive) q.set('include_inactive', 'true');
+    return apiFetch<SystemConfiguration[]>(`/admin/config/system?${q}`);
+  },
+  updateSystemConfig: (data: UpdateConfigurationInput) =>
+    apiFetch<{ updated: number; configurations: SystemConfiguration[] }>('/admin/config/system', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  getSchema: () =>
+    apiFetch<Array<{
+      key: string;
+      dataType: string;
+      category: string;
+      description?: string;
+      isRequired: boolean;
+      defaultValue?: any;
+      validationRules?: any;
+    }>>('/admin/config/schema'),
+
+  // Company Configuration
+  getCompanyConfig: (params?: { keys?: string[] }) => {
+    const q = new URLSearchParams();
+    if (params?.keys) params.keys.forEach(k => q.append('keys', k));
+    return apiFetch<CompanyConfiguration[]>(`/admin/config/company?${q}`);
+  },
+  updateCompanyConfig: (data: UpdateConfigurationInput) =>
+    apiFetch<{ updated: number; configurations: CompanyConfiguration[] }>('/admin/config/company', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // Branch Configuration
+  getBranchConfig: (branchId: string) =>
+    apiFetch<BranchConfiguration[]>(`/admin/config/branches/${branchId}`),
+  updateBranchConfig: (branchId: string, data: UpdateConfigurationInput) =>
+    apiFetch<{ updated: number; configurations: BranchConfiguration[] }>(`/admin/config/branches/${branchId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  listBranchConfigs: () =>
+    apiFetch<Array<{
+      id: string;
+      nameEn: string;
+      nameAr: string;
+      configurations: Array<{
+        configKey: string;
+        configValue: any;
+        inheritsFromCompany: boolean;
+        updatedAt: string;
+      }>;
+    }>>('/admin/config/branches'),
+  listBranches: () => branches.list({ page: 1, limit: 100 }).then((result) => result.items),
+
+  // Feature Flags
+  listFeatureFlags: (params?: { scope?: string; enabled_only?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.scope) q.set('scope', params.scope);
+    if (params?.enabled_only) q.set('enabled_only', 'true');
+    return apiFetch<FeatureFlag[]>(`/admin/config/feature-flags?${q}`);
+  },
+  updateFeatureFlag: (flagKey: string, data: FeatureFlagUpdate) =>
+    apiFetch<void>(`/admin/config/feature-flags/${flagKey}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  createFeatureFlag: (data: {
+    flagKey: string;
+    flagName: string;
+    description?: string;
+    scope: string;
+    isEnabled?: boolean;
+    rolloutPercentage?: number;
+    targetBranches?: string[];
+  }) =>
+    apiFetch<FeatureFlag>('/admin/config/feature-flags', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  checkFeatureFlagStatus: (flagKey: string) =>
+    apiFetch<{ flagKey: string; isEnabled: boolean }>(`/config/feature/${flagKey}/status`),
+
+  // Document Numbering
+  getNumbering: (params?: { document_type?: string; branch?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.document_type) q.set('document_type', params.document_type);
+    if (params?.branch) q.set('branch', params.branch);
+    return apiFetch<DocumentNumbering[]>(`/admin/config/numbering?${q}`);
+  },
+  updateNumbering: (documentType: string, data: DocumentNumberingUpdate) =>
+    apiFetch<DocumentNumbering>(`/admin/config/numbering/${documentType}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  resetSequence: (documentType: string, data: ResetNumberingInput) =>
+    apiFetch<DocumentNumbering>(`/admin/config/numbering/${documentType}/reset`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // Working Hours
+  getWorkingHours: (branchId: string) =>
+    apiFetch<WorkingHours[]>(`/admin/config/working-hours/${branchId}`),
+  updateWorkingHours: (branchId: string, data: WorkingHoursUpdate[]) =>
+    apiFetch<{ created: number; workingHours: WorkingHours[] }>(`/admin/config/working-hours/${branchId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  // Holidays
+  listHolidays: (params?: { branch_id?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.branch_id) q.set('branch_id', params.branch_id);
+    return apiFetch<Holiday[]>(`/admin/config/holidays?${q}`);
+  },
+  createHoliday: (data: CreateHolidayInput) =>
+    apiFetch<Holiday>('/admin/config/holidays', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteHoliday: (id: string) =>
+    apiFetch<void>(`/admin/config/holidays/${id}`, {
+      method: 'DELETE',
+    }),
+
+  // Configuration Audit
+  getAudit: (params?: {
+    config_type?: string;
+    config_key?: string;
+    branch_id?: string;
+    from_date?: string;
+    to_date?: string;
+    page?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.config_type) q.set('config_type', params.config_type);
+    if (params?.config_key) q.set('config_key', params.config_key);
+    if (params?.branch_id) q.set('branch_id', params.branch_id);
+    if (params?.from_date) q.set('from_date', params.from_date);
+    if (params?.to_date) q.set('to_date', params.to_date);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    return apiFetch<{
+      data: ConfigurationAuditEntry[];
+      meta: { page: number; limit: number; total: number; totalPages: number };
+    }>(`/admin/config/audit?${q}`);
+  },
+
+  // Configuration Statistics (TASK-014)
+  getStats: () =>
+    apiFetch<{
+      systemConfigurations: number;
+      companyConfigurations: number;
+      branchConfigurations: number;
+      totalFeatureFlags: number;
+      enabledFeatureFlags: number;
+      recentChangesLast7Days: number;
+    }>('/admin/config/stats'),
+
+  // Resolved Configuration (for current user)
+  getResolvedConfig: (params?: { keys?: string[]; branch_override?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.keys) params.keys.forEach(k => q.append('keys', k));
+    if (params?.branch_override) q.set('branch_override', 'true');
+    return apiFetch<Record<string, any>>(`/config/resolved?${q}`);
+  },
+  getConfigValue: (key: string) =>
+    apiFetch<{
+      value: any;
+      source: 'system' | 'company' | 'branch';
+      version?: number;
+      lastModified: string;
+      modifiedBy?: string;
+    }>(`/config/value/${key}`),
+};
+
+// ─────────────────────────────────────────────────────────
+// Customer Financing (Installments & Companies)
+// ─────────────────────────────────────────────────────────
+export interface FinancingCompany {
+  id: string;
+  name: string;
+  whatsappNumber: string;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstallmentDuration {
+  id: string;
+  months: number;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstallmentRequest {
+  id: string;
+  customerId: string;
+  motorcycleId: string;
+  financingCompanyId: string;
+  installmentDurationId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  buyerName: string;
+  buyerPhone: string;
+  buyerEmail?: string | null;
+  buyerAddress?: string | null;
+  buyerOccupation?: string | null;
+  buyerNationalIdImage: string;
+  buyerNationalIdBackImage?: string | null;
+  salarySlipImage?: string | null;
+  apartmentContractImage?: string | null;
+  guarantorName: string;
+  guarantorPhone: string;
+  guarantorAddress?: string | null;
+  guarantorNationalIdImage?: string | null;
+  guarantorNationalIdBackImage?: string | null;
+  guarantorSignatureImage?: string | null;
+  motorcyclePrice: number;
+  downPayment: number;
+  monthlyInstallment: number;
+  // Fallbacks for older records
+  durationMonths?: number;
+  installmentAmount?: number;
+  rejectionReason?: string | null;
+  reviewedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  customer?: any;
+  motorcycle?: any;
+  financingCompany?: any;
+  duration?: any;
+}
+
