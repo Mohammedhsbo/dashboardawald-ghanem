@@ -19,7 +19,9 @@ const t = {
     contractNumber: 'Contract #',
     customer: 'Customer',
     order: 'Order',
-    totalAmount: 'Total Amount',
+    totalAmount: 'Motorcycle Price',
+    totalPayable: 'Total Payable',
+    company: 'Financing Company',
     financed: 'Financed',
     installments: 'Installments',
     status: 'Status',
@@ -44,7 +46,9 @@ const t = {
     contractNumber: 'رقم العقد',
     customer: 'العميل',
     order: 'الطلب',
-    totalAmount: 'المبلغ الإجمالي',
+    totalAmount: 'سعر الدراجة',
+    totalPayable: 'إجمالي المستحق',
+    company: 'شركة التمويل',
     financed: 'الممول',
     installments: 'الأقساط',
     status: 'الحالة',
@@ -209,7 +213,9 @@ export default function FinancingContracts({ lang }: Props) {
                 <th>{i18n.customer}</th>
                 <th>{i18n.order}</th>
                 <th style={{ textAlign: isRtl ? 'left' : 'right' }}>{i18n.totalAmount}</th>
+                <th style={{ textAlign: isRtl ? 'left' : 'right' }}>{i18n.totalPayable}</th>
                 <th style={{ textAlign: isRtl ? 'left' : 'right' }}>{i18n.financed}</th>
+                <th>{i18n.company}</th>
                 <th style={{ textAlign: isRtl ? 'left' : 'right' }}>{i18n.paid}</th>
                 <th style={{ textAlign: isRtl ? 'left' : 'right' }}>{i18n.remaining}</th>
                 <th>{i18n.nextDue}</th>
@@ -245,8 +251,16 @@ export default function FinancingContracts({ lang }: Props) {
                   <td style={{ textAlign: isRtl ? 'left' : 'right', fontWeight: 600 }}>
                     {formatCurrency(contract.totalAmount)}
                   </td>
+                  <td style={{ textAlign: isRtl ? 'left' : 'right', fontWeight: 600 }}>
+                    {formatCurrency(contract.totalPayable ?? contract.totalAmount)}
+                  </td>
                   <td style={{ textAlign: isRtl ? 'left' : 'right', fontWeight: 600, color: '#3b82f6' }}>
                     {formatCurrency(contract.financingAmount)}
+                  </td>
+                  <td>
+                    {contract.financingCompany
+                      ? `${contract.financingCompany.name} · ${contract.interestRate}%`
+                      : '—'}
                   </td>
                   <td>{formatCurrency(paid)}</td>
                   <td>{formatCurrency(remaining)}</td>

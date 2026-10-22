@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle, Edit3, ExternalLink, MessageCircle, Save, Trash2, User, Bike, FileImage } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { customerFinancing, type InstallmentRequest } from '../api';
+import { customerFinancing, inquiries, type FinancingCompany, type InstallmentRequest } from '../api';
 
 function buildWhatsAppUrl(phone: string, message: string) {
   const cleanPhone = phone.replace(/\D/g, '');
@@ -15,6 +15,10 @@ const statusStyles: Record<string, { bg: string; color: string; border: string; 
   rejected: { bg: '#fef2f2', color: '#b91c1c', border: '#fca5a5', label: '' },
 };
 
+function displayValue(value: string | number | null | undefined) {
+  return value == null || value === '' ? '—' : String(value);
+}
+
 export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }) {
   const isRtl = lang === 'ar';
   const navigate = useNavigate();
@@ -22,20 +26,55 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ buyerName: '', buyerPhone: '', financingCompanyId: '', downPayment: '' });
+  const [companySearch, setCompanySearch] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const query = useQuery<InstallmentRequest>({
     queryKey: ['installment-request', id],
     queryFn: () => customerFinancing.getRequest(id!),
     enabled: Boolean(id),
   });
+  const companyQuery = useQuery<FinancingCompany[]>({
+    queryKey: ['financing-companies'],
+    queryFn: () => customerFinancing.listCompanies(),
+  });
   const request = query.data;
+  const electricityLetterQuery = useQuery({
+    queryKey: ['installment-request-electricity-letter', id, request?.inquiry?.id],
+    queryFn: () => inquiries.downloadElectricityLetter(request!.inquiry!.id),
+    enabled: Boolean(request?.inquiry?.id && request.inquiry.electricityLetterUploaded),
+    retry: false,
+  });
+  const [electricityLetterUrl, setElectricityLetterUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!electricityLetterQuery.data) {
+      setElectricityLetterUrl(null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(electricityLetterQuery.data);
+    setElectricityLetterUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [electricityLetterQuery.data]);
   const edit = useMutation({
     mutationFn: () => customerFinancing.updateRequest(id!, { buyerName: form.buyerName, buyerPhone: form.buyerPhone, financingCompanyId: form.financingCompanyId, downPayment: Number(form.downPayment) }),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['installment-request', id] }); setEditing(false); }
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['installment-request', id] }); void queryClient.invalidateQueries({ queryKey: ['installment-requests'] }); setEditing(false); setActionError(null); },
+    onError: (error: Error) => setActionError(error.message),
   });
-  const approve = useMutation({ mutationFn: () => customerFinancing.reviewRequest(id!, { status: 'approved' }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['installment-request', id] }); } });
-  const remove = useMutation({ mutationFn: () => customerFinancing.deleteRequest(id!), onSuccess: () => navigate('/installment-requests') });
-  const whatsapp = useMutation({ mutationFn: () => customerFinancing.getWhatsAppMessage(id!), onSuccess: ({ phone, message }) => window.open(buildWhatsAppUrl(phone, message), '_blank') });
+  const approve = useMutation({
+    mutationFn: () => customerFinancing.reviewRequest(id!, { status: 'approved' }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['installment-request', id] }); void queryClient.invalidateQueries({ queryKey: ['installment-requests'] }); setActionError(null); },
+    onError: (error: Error) => setActionError(error.message),
+  });
+  const remove = useMutation({
+    mutationFn: () => customerFinancing.deleteRequest(id!),
+    onSuccess: () => navigate('/installment-requests'),
+    onError: (error: Error) => setActionError(error.message),
+  });
+  const whatsapp = useMutation({
+    mutationFn: () => customerFinancing.getWhatsAppMessage(id!),
+    onSuccess: ({ phone, message }) => { window.open(buildWhatsAppUrl(phone, message), '_blank'); setActionError(null); },
+    onError: (error: Error) => setActionError(error.message),
+  });
 
   if (query.isLoading) return (
     <section className="desktop-page" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -48,7 +87,10 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
   if (query.isError || !request) return (
     <section className="desktop-page" dir={isRtl ? 'rtl' : 'ltr'}>
       <button className="premium-action-btn outline" style={{ marginBottom: '1.5rem' }} onClick={() => navigate('/installment-requests')}><ArrowLeft size={16} /> {isRtl ? 'العودة' : 'Back'}</button>
-      <div className="premium-glass-panel" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>{isRtl ? 'فشل تحميل الطلب' : 'Failed to load request.'}</div>
+      <div className="premium-glass-panel" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+        <p>{isRtl ? 'فشل تحميل الطلب' : 'Failed to load request.'}</p>
+        <button className="premium-action-btn outline" onClick={() => void query.refetch()}>{isRtl ? 'إعادة المحاولة' : 'Retry'}</button>
+      </div>
     </section>
   );
 
@@ -56,12 +98,31 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
     [isRtl ? 'بطاقة العميل - أمامي' : 'Buyer ID front', request.buyerNationalIdImage],
     [isRtl ? 'بطاقة العميل - خلفي' : 'Buyer ID back', request.buyerNationalIdBackImage],
     [isRtl ? 'المستند الداعم' : 'Supporting document', request.salarySlipImage],
+    [isRtl ? 'عقد الإقامة' : 'Apartment contract', request.apartmentContractImage],
     [isRtl ? 'بطاقة الضامن - أمامي' : 'Guarantor ID front', request.guarantorNationalIdImage],
     [isRtl ? 'بطاقة الضامن - خلفي' : 'Guarantor ID back', request.guarantorNationalIdBackImage],
     [isRtl ? 'توقيع الضامن' : 'Guarantor signature', request.guarantorSignatureImage],
   ];
-  const startEdit = () => { setForm({ buyerName: request.buyerName, buyerPhone: request.buyerPhone, financingCompanyId: request.financingCompanyId, downPayment: String(request.downPayment) }); setEditing(true); };
+  const companies = companyQuery.data ?? [];
+  const filteredCompanies = companies.filter(company =>
+    company.name.toLocaleLowerCase().includes(companySearch.trim().toLocaleLowerCase()),
+  );
+  const selectedCompany = companies.find(company => company.id === form.financingCompanyId);
+  const canSaveCompany = Boolean(selectedCompany && (selectedCompany.isActive || selectedCompany.id === request.financingCompanyId));
+  const startEdit = () => {
+    setForm({ buyerName: request.buyerName, buyerPhone: request.buyerPhone, financingCompanyId: request.financingCompanyId, downPayment: String(request.downPayment) });
+    setCompanySearch('');
+    setActionError(null);
+    setEditing(true);
+  };
   const sStyle = statusStyles[request.status] ?? statusStyles.pending;
+  const buyerAddress = request.buyerAddress || request.inquiry?.address;
+  const buyerOccupation = request.buyerOccupation || request.inquiry?.occupation;
+  const motorcycleName = `${isRtl ? request.motorcycle?.brand?.nameAr ?? '' : request.motorcycle?.brand?.nameEn ?? ''} ${request.motorcycle?.model ?? ''}`.trim();
+  const money = (amount: number | null | undefined) => amount == null
+    ? '—'
+    : `${amount.toLocaleString(isRtl ? 'ar-EG' : 'en-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP`;
+  const electricityLetterIsImage = electricityLetterQuery.data?.type.startsWith('image/') ?? false;
 
   return (
     <section className="desktop-page" dir={isRtl ? 'rtl' : 'ltr'}>
@@ -86,6 +147,7 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
 
       {/* Action Buttons */}
       <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '2rem' }}>
+        {actionError && <div className="login-error" role="alert" style={{ flexBasis: '100%' }}>{actionError}</div>}
         <button className="premium-action-btn solid" onClick={() => whatsapp.mutate()} disabled={whatsapp.isPending}>
           <MessageCircle size={17} /> {isRtl ? ' إرسال عبر واتساب الى شركه التمويل ' : 'Send via WhatsApp to financing company'}
         </button>
@@ -108,12 +170,18 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
           <h2 style={{ margin: '0 0 1.25rem', fontSize: '1.05rem', color: 'var(--blue-dark)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Edit3 size={18} /> {isRtl ? 'تعديل البيانات' : 'Edit Details'}
           </h2>
-          <form onSubmit={e => { e.preventDefault(); edit.mutate(); }}>
+          <form onSubmit={e => {
+            e.preventDefault();
+            if (!canSaveCompany) {
+              setActionError(isRtl ? 'يرجى اختيار شركة تمويل صالحة.' : 'Please select a valid financing company.');
+              return;
+            }
+            edit.mutate();
+          }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem', marginBottom: '1.25rem' }}>
               {[
                 { label: isRtl ? 'اسم العميل' : 'Customer name', key: 'buyerName', value: form.buyerName },
                 { label: isRtl ? 'الهاتف' : 'Phone', key: 'buyerPhone', value: form.buyerPhone },
-                { label: isRtl ? 'معرف شركة التمويل' : 'Financing company ID', key: 'financingCompanyId', value: form.financingCompanyId },
                 { label: isRtl ? 'الدفعة المقدمة' : 'Down payment', key: 'downPayment', value: form.downPayment, type: 'number' },
               ].map(field => (
                 <label key={field.key} style={{ display: 'grid', gap: '0.4rem', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
@@ -127,9 +195,60 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
                   />
                 </label>
               ))}
+              <div style={{ display: 'grid', gap: '0.4rem', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                <label htmlFor="financing-company-search">{isRtl ? 'شركة التمويل' : 'Financing company'}</label>
+                <input
+                  className="pos-input"
+                  type="search"
+                  id="financing-company-search"
+                  aria-label={isRtl ? 'البحث عن شركة تمويل' : 'Search financing companies'}
+                  placeholder={isRtl ? 'البحث بالاسم' : 'Search by company name'}
+                  value={companySearch}
+                  disabled={companyQuery.isLoading || companyQuery.isError || companies.length === 0}
+                  onChange={e => setCompanySearch(e.target.value)}
+                  style={{ minHeight: 42, borderRadius: 10, border: '1px solid #bfdbfe', padding: '0 0.75rem' }}
+                />
+                <select
+                  className="pos-input"
+                  aria-label={isRtl ? 'شركة التمويل' : 'Financing company'}
+                  value={form.financingCompanyId}
+                  required
+                  disabled={companyQuery.isLoading || companyQuery.isError || companies.length === 0}
+                  onChange={e => setForm({ ...form, financingCompanyId: e.target.value })}
+                  style={{ minHeight: 42, borderRadius: 10, border: '1px solid #bfdbfe', padding: '0 0.75rem' }}
+                >
+                  {selectedCompany && !filteredCompanies.some(company => company.id === selectedCompany.id) && (
+                    <option value={selectedCompany.id} hidden>{selectedCompany.name}</option>
+                  )}
+                  {filteredCompanies.map(company => (
+                    <option
+                      key={company.id}
+                      value={company.id}
+                      disabled={!company.isActive && company.id !== request.financingCompanyId}
+                    >
+                      {company.name}
+                    </option>
+                  ))}
+                </select>
+                {companyQuery.isLoading && <span role="status">{isRtl ? 'جاري تحميل شركات التمويل...' : 'Loading financing companies...'}</span>}
+                {companyQuery.isError && (
+                  <div role="alert">
+                    {isRtl ? 'تعذر تحميل شركات التمويل.' : 'Could not load financing companies.'}{' '}
+                    <button type="button" className="btn btn-outline" onClick={() => void companyQuery.refetch()}>
+                      {isRtl ? 'إعادة المحاولة' : 'Retry'}
+                    </button>
+                  </div>
+                )}
+                {!companyQuery.isLoading && !companyQuery.isError && companies.length === 0 && (
+                  <span role="status">{isRtl ? 'لا توجد شركات تمويل مسجلة.' : 'No financing companies are registered.'}</span>
+                )}
+                {!companyQuery.isLoading && !companyQuery.isError && companies.length > 0 && filteredCompanies.length === 0 && (
+                  <span role="status">{isRtl ? 'لا توجد شركات تطابق البحث.' : 'No companies match your search.'}</span>
+                )}
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <button className="premium-action-btn solid" type="submit" disabled={edit.isPending}>
+              <button className="premium-action-btn solid" type="submit" disabled={edit.isPending || companyQuery.isLoading || companyQuery.isError || companies.length === 0 || !canSaveCompany}>
                 <Save size={16} /> {isRtl ? 'حفظ التعديل' : 'Save changes'}
               </button>
               <button className="premium-action-btn outline" type="button" onClick={() => setEditing(false)}>{isRtl ? 'إلغاء' : 'Cancel'}</button>
@@ -139,7 +258,7 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
       )}
 
       {/* Info Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.25rem', marginBottom: '1.25rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
         <div className="premium-stat-card">
           <h3><User size={18} /> {isRtl ? 'بيانات العميل' : 'Customer Info'}</h3>
           <div style={{ display: 'grid', gap: '0.6rem' }}>
@@ -147,8 +266,8 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
               [isRtl ? 'الاسم' : 'Name', request.buyerName],
               [isRtl ? 'الهاتف' : 'Phone', request.buyerPhone],
               [isRtl ? 'البريد' : 'Email', request.buyerEmail || '-'],
-              [isRtl ? 'العنوان' : 'Address', request.buyerAddress || '-'],
-              [isRtl ? 'المهنة' : 'Occupation', request.buyerOccupation || '-'],
+              [isRtl ? 'العنوان' : 'Address', buyerAddress],
+              [isRtl ? 'المهنة' : 'Occupation', buyerOccupation],
             ].map(([label, val]) => (
               <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.55rem 0', borderBottom: '1px solid #f1f5f9', fontSize: '0.875rem' }}>
                 <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{label}</span>
@@ -159,13 +278,42 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
         </div>
 
         <div className="premium-stat-card">
+          <h3><User size={18} /> {isRtl ? 'بيانات الضامن' : 'Guarantor Information'}</h3>
+          <div style={{ display: 'grid', gap: '0.6rem' }}>
+            {[
+              [isRtl ? 'الاسم' : 'Name', request.inquiry?.firstGuarantorName || request.guarantorName],
+              [isRtl ? 'الهاتف' : 'Phone', request.inquiry?.firstGuarantorPhone || request.guarantorPhone],
+              [isRtl ? 'العنوان' : 'Address', request.inquiry?.firstGuarantorAddress || request.guarantorAddress],
+              [isRtl ? 'المهنة' : 'Occupation', request.inquiry?.firstGuarantorOccupation],
+              [isRtl ? 'عنوان العمل' : 'Occupation address', request.inquiry?.firstGuarantorOccupationAddress],
+              [isRtl ? 'الضامن الثاني' : 'Second guarantor', request.inquiry?.secondGuarantorName],
+              [isRtl ? 'هاتف الضامن الثاني' : 'Second guarantor phone', request.inquiry?.secondGuarantorPhone],
+              [isRtl ? 'عنوان الضامن الثاني' : 'Second guarantor address', request.inquiry?.secondGuarantorAddress],
+            ].map(([label, value]) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', padding: '0.55rem 0', borderBottom: '1px solid #f1f5f9', fontSize: '0.875rem' }}>
+                <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{label}</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-primary)', textAlign: isRtl ? 'left' : 'right' }}>{displayValue(value)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="premium-stat-card">
           <h3><Bike size={18} /> {isRtl ? 'بيانات الطلب' : 'Request Info'}</h3>
           <div style={{ display: 'grid', gap: '0.6rem' }}>
             {[
-              [isRtl ? 'الدراجة' : 'Motorcycle', `${request.motorcycle?.brand?.nameEn || ''} ${request.motorcycle?.model || '-'}`.trim()],
+              [isRtl ? 'الدراجة' : 'Motorcycle', motorcycleName || '—'],
+              [isRtl ? 'السعر' : 'Motorcycle price', money(request.motorcyclePrice)],
+              [isRtl ? 'السنة' : 'Year', request.motorcycle?.year],
+              [isRtl ? 'رقم المحرك' : 'Engine number', request.motorcycle?.engineNumber],
+              [isRtl ? 'رقم الشاسيه' : 'Chassis / VIN', request.motorcycle?.vin],
               [isRtl ? 'شركة التمويل' : 'Financing company', request.financingCompany?.name || '-'],
-              [isRtl ? 'الدفعة المقدمة' : 'Down payment', request.downPayment != null ? `${request.downPayment.toLocaleString()} EGP` : '-'],
-              [isRtl ? 'القسط الشهري' : 'Monthly installment', request.monthlyInstallment != null ? `${request.monthlyInstallment.toLocaleString()} EGP` : '-'],
+              [isRtl ? 'نسبة الفائدة السنوية' : 'Annual interest rate', request.annualInterestRate == null ? '—' : `${request.annualInterestRate}%`],
+              [isRtl ? 'الدفعة المقدمة' : 'Down payment', money(request.downPayment)],
+              [isRtl ? 'المبلغ الممول' : 'Amount financed', money(request.financedAmount)],
+              [isRtl ? 'قيمة الفائدة' : 'Interest amount', money(request.totalInterest)],
+              [isRtl ? 'إجمالي المستحق' : 'Total payable', money(request.totalAmountDue)],
+              [isRtl ? 'القسط الشهري' : 'Monthly installment', money(request.monthlyInstallment)],
               [isRtl ? 'مدة التقسيط' : 'Duration', request.duration?.months ? `${request.duration.months} ${isRtl ? 'شهر' : 'months'}` : '-'],
             ].map(([label, val]) => (
               <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.55rem 0', borderBottom: '1px solid #f1f5f9', fontSize: '0.875rem' }}>
@@ -178,10 +326,26 @@ export default function InstallmentRequestDetail({ lang }: { lang: 'en' | 'ar' }
       </div>
 
       {/* Documents */}
-      {imageItems.some(([, img]) => img) && (
+      {(imageItems.some(([, img]) => img) || Boolean(request.inquiry?.electricityLetterUploaded)) && (
         <div className="premium-stat-card">
           <h3><FileImage size={18} /> {isRtl ? 'المستندات' : 'Documents'}</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '1rem' }}>
+            {request.inquiry?.electricityLetterUploaded && (
+              <div>
+                <span style={{ display: 'block', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{isRtl ? 'جواب الكهرباء' : 'Electricity letter'}</span>
+                {electricityLetterQuery.isLoading ? <span className="text-muted">{isRtl ? 'جاري التحميل...' : 'Loading document...'}</span>
+                  : electricityLetterQuery.isError ? <div role="alert">
+                    <span className="text-muted">{isRtl ? 'تعذر تحميل المستند.' : 'Could not load document.'}</span>
+                    <button type="button" className="btn btn-outline" onClick={() => void electricityLetterQuery.refetch()}>{isRtl ? 'إعادة المحاولة' : 'Retry'}</button>
+                  </div>
+                    : electricityLetterUrl && electricityLetterIsImage ? <a href={electricityLetterUrl} target="_blank" rel="noreferrer">
+                      <img src={electricityLetterUrl} alt={isRtl ? 'جواب الكهرباء' : 'Electricity letter'} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: '0.5rem', border: '1px solid #bfdbfe' }} />
+                    </a>
+                      : electricityLetterUrl ? <a href={electricityLetterUrl} target="_blank" rel="noreferrer" download>
+                        {isRtl ? 'عرض أو تنزيل المستند' : 'View or download document'}
+                      </a> : <span className="text-muted">{isRtl ? 'المستند غير متاح.' : 'Document unavailable.'}</span>}
+              </div>
+            )}
             {imageItems.map(([label, image]) => image && (
               <a key={label} href={image} target="_blank" rel="noreferrer"
                 style={{ display: 'block', textDecoration: 'none', borderRadius: '12px', overflow: 'hidden', border: '1px solid #bfdbfe', transition: 'all 0.2s ease' }}

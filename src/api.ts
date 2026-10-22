@@ -117,6 +117,43 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}, canRe
   return Object.prototype.hasOwnProperty.call(json, 'data') ? json.data : json;
 }
 
+export async function apiFetchBlob(path: string, options: RequestInit = {}, canRefresh = true): Promise<Blob> {
+  const isFormData = options.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+
+  if (response.status === 401 && canRefresh && path !== '/auth/login' && path !== '/auth/refresh') {
+    let refreshed = false;
+    try {
+      await refreshAccessToken();
+      refreshed = true;
+    } catch {
+      clearToken();
+    }
+    if (refreshed) return apiFetchBlob(path, options, false);
+  }
+
+  if (!response.ok) {
+    const json = await response.json() as { error?: { message?: string; code?: string; details?: unknown }; message?: string; code?: string };
+    const errorBody = json.error ?? json;
+    const error = new Error(errorBody.message ?? json.message ?? 'Request failed') as Error & {
+      code?: string;
+      status?: number;
+      details?: unknown;
+    };
+    error.code = errorBody.code ?? json.code;
+    error.status = response.status;
+    error.details = 'details' in errorBody ? errorBody.details : undefined;
+    throw error;
+  }
+
+  return response.blob();
+}
+
 export const integrations = {
   list: async (): Promise<Integration[]> => {
     const response = await apiFetch<{ items: Integration[] }>('/admin/integrations');
@@ -684,9 +721,11 @@ export interface CreateTransferInput {
 }
 
 export type MotorcycleStatus = 'in_transit' | 'available' | 'reserved' | 'sold' | 'in_transfer' | 'maintenance' | 'returned';
+export type MotorcycleFuelType = 'PETROL' | 'ELECTRIC';
 
 export interface MotorcycleInput {
   vin: string;
+  fuelType: MotorcycleFuelType;
   engineNumber?: string;
   model: string;
   year: number;
@@ -704,6 +743,7 @@ export interface MotorcycleInput {
 }
 
 export interface MotorcycleUpdate {
+  fuelType?: MotorcycleFuelType;
   model?: string;
   year?: number;
   color?: string;
@@ -738,6 +778,7 @@ export interface MotorcycleListQuery {
 export interface MotorcycleResponse {
   id: string;
   vin: string;
+  fuelType: MotorcycleFuelType | null;
   engineNumber: string | null;
   model: string;
   year: number;
@@ -1235,14 +1276,40 @@ export type InstallmentFrequency = 'monthly' | 'quarterly';
 export interface FinancingContractListItem {
   id: string;
   contractNumber: string;
-  customer: { id: string; name: string; phone: string };
-  order: { id: string; orderNumber: string; status: string };
+  customer: { id: string; name: string; phone: string; email?: string | null; address?: string | null; customerCode?: string | null };
+  order: {
+    id: string;
+    orderNumber: string;
+    status: string;
+    address?: string | null;
+    items?: Array<{
+      id: string;
+      unitPrice: number;
+      discount: number;
+      motorcycle: {
+        id: string;
+        model: string;
+        year: number;
+        price: number;
+        vin: string;
+        engineNumber?: string | null;
+        color?: string | null;
+        engineSize?: string | null;
+        brand: { nameAr: string; nameEn: string };
+        category?: { nameAr: string; nameEn: string };
+      };
+    }>;
+  };
   branch: { id: string; nameEn: string; nameAr: string };
   totalAmount: number;
   downPayment: number;
   financingAmount: number;
   numberOfInstallments: number;
+  installmentFrequency: InstallmentFrequency;
   interestRate: number;
+  interestAmount?: number;
+  totalPayable?: number;
+  financingCompany?: { id: string; name: string; annualInterestRate: number } | null;
   startDate: string;
   status: FinancingContractStatus;
   createdAt: string;
@@ -1275,6 +1342,7 @@ export interface CreateFinancingContractInput {
   totalAmount: number;
   downPayment: number;
   numberOfInstallments: number;
+  financingCompanyId?: string;
   interestRate?: number;
   startDate: string;
   installmentFrequency?: InstallmentFrequency;
@@ -1422,6 +1490,10 @@ export const customerFinancing = {
   createDuration: (data: Partial<InstallmentDuration>) => apiFetch<InstallmentDuration>('/admin/installment-durations', { method: 'POST', body: JSON.stringify(data) }),
   updateDuration: (id: string, data: Partial<InstallmentDuration>) => apiFetch<InstallmentDuration>(`/admin/installment-durations/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteDuration: (id: string) => apiFetch<void>(`/admin/installment-durations/${id}`, { method: 'DELETE' }),
+};
+
+export const inquiries = {
+  downloadElectricityLetter: (id: string) => apiFetchBlob(`/inquiries/${id}/electricity-letter`),
 };
 
 // ─────────────────────────────────────────────────────────
@@ -2108,6 +2180,7 @@ export interface FinancingCompany {
   id: string;
   name: string;
   whatsappNumber: string;
+  annualInterestRate: number;
   isActive: boolean;
   sortOrder: number;
   createdAt: string;
@@ -2147,6 +2220,10 @@ export interface InstallmentRequest {
   guarantorSignatureImage?: string | null;
   motorcyclePrice: number;
   downPayment: number;
+  annualInterestRate?: number;
+  financedAmount?: number;
+  totalInterest?: number;
+  totalAmountDue?: number;
   monthlyInstallment: number;
   // Fallbacks for older records
   durationMonths?: number;
@@ -2155,9 +2232,34 @@ export interface InstallmentRequest {
   reviewedAt?: string | null;
   createdAt: string;
   updatedAt: string;
-  customer?: any;
-  motorcycle?: any;
-  financingCompany?: any;
-  duration?: any;
+  customer?: { id: string; name: string; phone: string; email?: string | null };
+  motorcycle?: {
+    id: string;
+    model: string;
+    price: number;
+    year?: number;
+    engineNumber?: string | null;
+    vin?: string;
+    color?: string | null;
+    engineSize?: string | null;
+    brand?: { nameAr: string; nameEn: string };
+  } | null;
+  financingCompany?: { id: string; name: string; annualInterestRate: number };
+  duration?: { id: string; months: number };
+  inquiry?: {
+    id: string;
+    address?: string | null;
+    occupation?: string | null;
+    firstGuarantorName?: string | null;
+    firstGuarantorPhone?: string | null;
+    firstGuarantorAddress?: string | null;
+    firstGuarantorOccupation?: string | null;
+    firstGuarantorOccupationAddress?: string | null;
+    secondGuarantorName?: string | null;
+    secondGuarantorPhone?: string | null;
+    secondGuarantorAddress?: string | null;
+    secondGuarantorOccupation?: string | null;
+    secondGuarantorOccupationAddress?: string | null;
+    electricityLetterUploaded?: boolean;
+  } | null;
 }
-

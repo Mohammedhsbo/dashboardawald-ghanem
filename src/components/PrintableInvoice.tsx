@@ -100,7 +100,7 @@ const t = {
     notes: 'ملاحظات',
     branch: 'الفرع',
     vin: 'رقم الهيكل',
-    engineNumber: 'رقم المحرك',
+    engineNumber: 'رقم الشاسيه والماتور',
     model: 'الموديل',
     thankyou: 'شكراً على تعاملكم معنا!',
   },

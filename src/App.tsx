@@ -165,7 +165,6 @@ export default function App() {
               <Route path="/financing/:id" element={<FinancingContractDetail lang={lang} />} />
               <Route path="/installment-requests" element={<InstallmentRequests lang={lang} />} />
               <Route path="/installment-requests/:id" element={<InstallmentRequestDetail lang={lang} />} />
-              <Route path="/installment-requests/:id" element={<InstallmentRequestDetail lang={lang} />} />
               <Route path="/financing-companies" element={<FinancingCompanies lang={lang} />} />
               <Route path="/installment-durations" element={<InstallmentDurations lang={lang} />} />
               <Route path="/reports" element={<Reports lang={lang} />} />

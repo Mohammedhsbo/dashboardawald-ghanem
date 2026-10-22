@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CreditCard, AlertCircle, CheckCircle, DollarSign, Calendar, User, Package } from 'lucide-react';
+import { ArrowLeft, CreditCard, AlertCircle, CheckCircle, DollarSign } from 'lucide-react';
 import { financingContracts, installments, type InstallmentPaymentInput, type PaymentMethod } from '../api';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
@@ -21,11 +21,28 @@ const t = {
     branch: 'Branch',
     status: 'Status',
     totalAmount: 'Total Amount',
+    totalPayable: 'Total Payable',
     downPayment: 'Down Payment',
     financingAmount: 'Financing Amount',
+    interestAmount: 'Interest Amount',
     interestRate: 'Interest Rate',
+    financingCompany: 'Financing Company',
     numberOfInstallments: 'Number of Installments',
+    frequency: 'Payment Frequency',
+    monthly: 'Monthly',
+    quarterly: 'Quarterly',
+    paidTotal: 'Total Paid',
+    overdueTotal: 'Overdue Amount',
+    motorcycle: 'Motorcycle Details',
+    motorcyclePrice: 'Motorcycle Price',
+    customerCode: 'Customer Code',
+    model: 'Model',
+    year: 'Year',
+    brand: 'Brand',
+    engineNumber: 'Engine Number',
+    chassisNumber: 'Chassis / VIN',
     startDate: 'Start Date',
+    createdAt: 'Contract Created',
     approvedAt: 'Approved At',
     completedAt: 'Completed At',
     creator: 'Created By',
@@ -81,11 +98,28 @@ const t = {
     branch: 'الفرع',
     status: 'الحالة',
     totalAmount: 'المبلغ الإجمالي',
+    totalPayable: 'إجمالي المبلغ المستحق',
     downPayment: 'الدفعة المقدمة',
     financingAmount: 'المبلغ الممول',
+    interestAmount: 'قيمة الفائدة',
     interestRate: 'معدل الفائدة',
+    financingCompany: 'شركة التمويل',
     numberOfInstallments: 'عدد الأقساط',
+    frequency: 'دورية السداد',
+    monthly: 'شهري',
+    quarterly: 'ربع سنوي',
+    paidTotal: 'إجمالي المدفوع',
+    overdueTotal: 'المبلغ المتأخر',
+    motorcycle: 'بيانات الدراجة',
+    motorcyclePrice: 'سعر الدراجة',
+    customerCode: 'كود العميل',
+    model: 'الموديل',
+    year: 'السنة',
+    brand: 'الماركة',
+    engineNumber: 'رقم المحرك',
+    chassisNumber: 'رقم الشاسيه / VIN',
     startDate: 'تاريخ البدء',
+    createdAt: 'تاريخ إنشاء العقد',
     approvedAt: 'تاريخ الموافقة',
     completedAt: 'تاريخ الإكمال',
     creator: 'أنشأ بواسطة',
@@ -142,7 +176,6 @@ const PAYMENT_METHODS: { key: PaymentMethod; label: { en: string; ar: string } }
 
 export default function FinancingContractDetail({ lang }: Props) {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const i18n = t[lang];
   const isRtl = lang === 'ar';
@@ -150,7 +183,6 @@ export default function FinancingContractDetail({ lang }: Props) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedInstallment, setSelectedInstallment] = useState<string | null>(null);
   const [showSettlementModal, setShowSettlementModal] = useState(false);
-  const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
     amount: '',
     method: 'cash' as PaymentMethod,
@@ -163,7 +195,7 @@ export default function FinancingContractDetail({ lang }: Props) {
     notes: '',
   });
 
-  const { data: contract, isLoading, isError } = useQuery({
+  const { data: contract, isLoading, isError, refetch } = useQuery({
     queryKey: ['financing-contract', id],
     queryFn: () => financingContracts.get(id!),
     enabled: !!id,
@@ -195,17 +227,6 @@ export default function FinancingContractDetail({ lang }: Props) {
         alert(i18n.settlementSuccess);
       },
     });
-    const approvalMutation = useMutation({
-      mutationFn: () => financingContracts.approve(id!),
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: ['financing-contract', id] });
-        queryClient.invalidateQueries({ queryKey: ['financing-contracts'] });
-        queryClient.invalidateQueries({ queryKey: ['customer-financing'] });
-        setShowApprovalModal(false);
-        alert(i18n.approvalSuccess);
-      },
-    });
-
   const cancelMutation = useMutation({
     mutationFn: () => financingContracts.updateStatus(id!, 'cancelled'),
     onSuccess: () => {
@@ -263,13 +284,12 @@ export default function FinancingContractDetail({ lang }: Props) {
     settlementMutation.mutate();
   };
 
-  const submitApproval = () => {
-    approvalMutation.mutate();
-  };
-
   const remainingBalance = contract?.installments
-    .filter(i => i.status !== 'paid')
     .reduce((sum, i) => sum + i.remainingAmount, 0) ?? 0;
+  const totalPaid = contract?.installments.reduce((sum, installment) => sum + installment.paidAmount, 0) ?? 0;
+  const overdueBalance = contract?.installments
+    .filter(installment => installment.status === 'overdue')
+    .reduce((sum, installment) => sum + installment.remainingAmount, 0) ?? 0;
 
   if (isLoading) {
     return (
@@ -288,6 +308,7 @@ export default function FinancingContractDetail({ lang }: Props) {
         <div className="card" style={{ padding: '3rem', textAlign: 'center', borderLeft: '3px solid #ef4444' }}>
           <AlertCircle size={48} style={{ margin: '0 auto 1rem', color: '#ef4444' }} />
           <p style={{ color: '#ef4444' }}>{i18n.error}</p>
+          <button className="btn btn-outline" onClick={() => void refetch()}>{lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}</button>
         </div>
       </div>
     );
@@ -340,6 +361,22 @@ export default function FinancingContractDetail({ lang }: Props) {
               <Link to={`/orders/${contract.order.id}`} className="link">{contract.order.orderNumber}</Link>
             </div>
             <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.createdAt}</div>
+              <div>{formatDate(contract.createdAt)}</div>
+            </div>
+            {contract.customer.customerCode && <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.customerCode}</div>
+              <div>{contract.customer.customerCode}</div>
+            </div>}
+            {contract.customer.email && <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{lang === 'ar' ? 'البريد الإلكتروني' : 'Email'}</div>
+              <div dir="ltr">{contract.customer.email}</div>
+            </div>}
+            {contract.customer.address && <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{lang === 'ar' ? 'العنوان' : 'Address'}</div>
+              <div>{contract.customer.address}</div>
+            </div>}
+            <div>
               <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.status}</div>
               <Badge status={contract.status} lang={lang} />
             </div>
@@ -350,7 +387,7 @@ export default function FinancingContractDetail({ lang }: Props) {
           <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '1rem', color: 'var(--text-muted)' }}>{i18n.totalAmount}</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div>
-              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.totalAmount}</div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.motorcyclePrice}</div>
               <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{formatCurrency(contract.totalAmount)}</div>
             </div>
             <div>
@@ -360,6 +397,22 @@ export default function FinancingContractDetail({ lang }: Props) {
             <div>
               <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.financingAmount}</div>
               <div style={{ fontWeight: 600, color: '#3b82f6' }}>{formatCurrency(contract.financingAmount)}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.interestAmount}</div>
+              <div style={{ fontWeight: 600 }}>{formatCurrency(contract.interestAmount ?? 0)}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.totalPayable}</div>
+              <div style={{ fontWeight: 700 }}>{formatCurrency(contract.totalPayable ?? contract.totalAmount)}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.paidTotal}</div>
+              <div style={{ fontWeight: 600, color: '#10b981' }}>{formatCurrency(totalPaid)}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.overdueTotal}</div>
+              <div style={{ fontWeight: 600, color: overdueBalance > 0 ? '#ef4444' : 'inherit' }}>{formatCurrency(overdueBalance)}</div>
             </div>
             <div>
               <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.remainingAmount}</div>
@@ -382,12 +435,40 @@ export default function FinancingContractDetail({ lang }: Props) {
               <div style={{ fontWeight: 600 }}>{contract.interestRate}%</div>
             </div>
             <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.financingCompany}</div>
+              <div style={{ fontWeight: 600 }}>{contract.financingCompany?.name ?? '—'}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.frequency}</div>
+              <div style={{ fontWeight: 600 }}>{contract.installmentFrequency === 'quarterly' ? i18n.quarterly : i18n.monthly}</div>
+            </div>
+            <div>
               <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.startDate}</div>
               <div style={{ fontWeight: 600 }}>{formatDate(contract.startDate)}</div>
+            </div>
+            <div>
+              <div className="text-muted" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>{i18n.branch}</div>
+              <div style={{ fontWeight: 600 }}>{lang === 'ar' ? contract.branch.nameAr : contract.branch.nameEn}</div>
             </div>
           </div>
         </div>
       </div>
+
+      {(contract.order.items ?? []).length > 0 && <div className="card" style={{ marginBottom: '1.5rem' }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>{i18n.motorcycle}</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+          {contract.order.items?.map(item => <div key={item.id} className="card" style={{ boxShadow: 'none' }}>
+            <div><span className="text-muted">{i18n.brand}: </span>{lang === 'ar' ? item.motorcycle.brand.nameAr : item.motorcycle.brand.nameEn}</div>
+            <div><span className="text-muted">{i18n.model}: </span>{item.motorcycle.model}</div>
+            <div><span className="text-muted">{i18n.year}: </span>{item.motorcycle.year}</div>
+            <div><span className="text-muted">{i18n.motorcyclePrice}: </span>{formatCurrency(item.unitPrice)}</div>
+            {item.motorcycle.engineNumber && <div><span className="text-muted">{i18n.engineNumber}: </span>{item.motorcycle.engineNumber}</div>}
+            <div><span className="text-muted">{i18n.chassisNumber}: </span>{item.motorcycle.vin}</div>
+            {item.motorcycle.color && <div><span className="text-muted">{lang === 'ar' ? 'اللون' : 'Color'}: </span>{item.motorcycle.color}</div>}
+            {item.motorcycle.engineSize && <div><span className="text-muted">{lang === 'ar' ? 'سعة المحرك' : 'Engine size'}: </span>{item.motorcycle.engineSize}</div>}
+          </div>)}
+        </div>
+      </div>}
 
       <div className="card" style={{ marginBottom: '1.5rem' }}>
         <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>{i18n.installmentSchedule}</h3>
