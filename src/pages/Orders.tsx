@@ -19,6 +19,14 @@ const t = {
     branch: 'Branch',
     items: 'Items',
     amount: 'Amount',
+    paymentMethod: 'Payment Method',
+    paymentStatus: 'Payment Status',
+    cash: 'Cash on delivery',
+    instapay: 'InstaPay transfer',
+    unpaid: 'Unpaid',
+    pendingVerification: 'Awaiting verification',
+    paid: 'Paid',
+    unknown: 'Not specified',
     status: 'Status',
     date: 'Date',
     noData: 'No orders found.',
@@ -36,6 +44,14 @@ const t = {
     branch: 'الفرع',
     items: 'العناصر',
     amount: 'المبلغ',
+    paymentMethod: 'طريقة الدفع',
+    paymentStatus: 'حالة الدفع',
+    cash: 'الدفع عند الاستلام',
+    instapay: 'تحويل InstaPay',
+    unpaid: 'غير مدفوع',
+    pendingVerification: 'بانتظار مراجعة التحويل',
+    paid: 'مدفوع',
+    unknown: 'غير محدد',
     status: 'الحالة',
     date: 'التاريخ',
     noData: 'لا يوجد طلبات.',
@@ -148,6 +164,8 @@ export default function Orders({ lang }: Props) {
                   <th>{i18n.branch}</th>
                   <th>{i18n.items}</th>
                   <th>{i18n.amount}</th>
+                  <th>{i18n.paymentMethod}</th>
+                  <th>{i18n.paymentStatus}</th>
                   <th>{i18n.status}</th>
                   <th>{i18n.date}</th>
                   <th></th>
@@ -200,6 +218,18 @@ export default function Orders({ lang }: Props) {
                           {formatCurrency(order.totalAmount)}
                         </div>
                       )}
+                    </td>
+                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                      {order.paymentMethod === 'instapay' ? i18n.instapay : order.paymentMethod === 'cash' ? i18n.cash : i18n.unknown}
+                    </td>
+                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                      {order.paymentStatus === 'pending_verification'
+                        ? i18n.pendingVerification
+                        : order.paymentStatus === 'unpaid'
+                          ? i18n.unpaid
+                          : order.paymentStatus === 'paid'
+                            ? i18n.paid
+                            : i18n.unknown}
                     </td>
                     <td>
                       <Badge status={order.status as any} lang={lang} />

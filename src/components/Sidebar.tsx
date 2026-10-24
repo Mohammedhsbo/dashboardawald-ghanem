@@ -16,6 +16,7 @@ const nav = [
   { to: '/motorcycles', icon: Bike, label: 'Motorcycles', labelAr: 'الدراجات النارية' },
   { to: '/customers', icon: Users, label: 'Customers', labelAr: 'العملاء' },
   { to: '/orders', icon: ShoppingBag, label: 'Orders', labelAr: 'الطلبات' },
+  { to: '/payment-settings', icon: Settings, label: 'Payment Settings', labelAr: 'إعدادات الدفع' },
   { to: '/payments', icon: CreditCard, label: 'Payments', labelAr: 'الدفعات' },
   { to: '/financing', icon: Wallet, label: 'Financing Contracts', labelAr: 'عقود التمويل' },
   { to: '/installment-requests', icon: Wallet, label: 'Installment Requests', labelAr: 'طلبات التقسيط' },

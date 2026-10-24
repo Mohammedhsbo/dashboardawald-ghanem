@@ -179,6 +179,19 @@ export const apiKeys = {
   },
 };
 
+export interface PaymentSettings {
+  instaPayAccount: string | null;
+}
+
+export const paymentSettings = {
+  get: () => apiFetch<PaymentSettings>('/admin/payment-settings'),
+  update: (instaPayAccount: string | null) =>
+    apiFetch<PaymentSettings>('/admin/payment-settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ instaPayAccount }),
+    }),
+};
+
 // ─────────────────────────────────────────────────────────
 // Auth
 // ─────────────────────────────────────────────────────────
@@ -520,6 +533,19 @@ export const customers = {
 // Orders
 // ─────────────────────────────────────────────────────────
 export type OrderStatus = 'draft' | 'confirmed' | 'processing' | 'awaiting_delivery' | 'completed' | 'cancelled' | 'refunded';
+export type OrderPaymentMethod = 'cash' | 'instapay';
+
+export interface DeliveryAddress {
+  recipientName?: string;
+  recipientPhone?: string;
+  governorate?: string;
+  city?: string;
+  street?: string;
+  buildingNumber?: string;
+  floor?: string;
+  apartment?: string;
+  instructions?: string;
+}
 
 export interface OrderItem {
   id: string;
@@ -546,6 +572,8 @@ export interface Order {
   totalAmount: number;
   discount: number;
   netAmount: number;
+  paymentMethod?: OrderPaymentMethod | null;
+  paymentStatus?: string | null;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -561,6 +589,8 @@ export interface OrderListItem {
   totalAmount: number;
   discount: number;
   netAmount: number;
+  paymentMethod?: OrderPaymentMethod | null;
+  paymentStatus?: string | null;
   createdAt: string;
 }
 
@@ -572,6 +602,13 @@ export interface OrderDetail extends Order {
     email?: string;
     defaultAddress?: { addressLine: string; city?: string };
   };
+  address?: string | null;
+  deliveryAddress?: DeliveryAddress | null;
+  paymentMethod?: OrderPaymentMethod | null;
+  paymentStatus?: string | null;
+  senderIdentifier?: string | null;
+  senderName?: string | null;
+  hasPaymentProof?: boolean;
   branch: { id: string; nameEn: string; nameAr: string };
   user: { id: string; name: string };
   items: OrderItem[];
@@ -593,6 +630,7 @@ export const orders = {
     status?: OrderStatus;
     branchId?: string;
     customerId?: string;
+    paymentMethod?: OrderPaymentMethod;
     startDate?: string;
     endDate?: string;
     page?: number;
@@ -605,6 +643,7 @@ export const orders = {
     if (params?.status) q.set('status', params.status);
     if (params?.branchId) q.set('branchId', params.branchId);
     if (params?.customerId) q.set('customerId', params.customerId);
+    if (params?.paymentMethod) q.set('paymentMethod', params.paymentMethod);
     if (params?.startDate) q.set('startDate', params.startDate);
     if (params?.endDate) q.set('endDate', params.endDate);
     if (params?.page) q.set('page', String(params.page));
@@ -614,6 +653,7 @@ export const orders = {
     return apiFetch<PaginatedResult<OrderListItem>>(`/orders?${q}`);
   },
   get: (id: string) => apiFetch<OrderDetail>(`/orders/${id}`),
+  getPaymentProof: (id: string) => apiFetchBlob(`/orders/${id}/payment-proof`),
   getHistory: (id: string) => apiFetch<OrderHistoryEntry[]>(`/orders/${id}/history`),
   changeStatus: (id: string, status: OrderStatus, reason?: string) =>
     apiFetch<OrderDetail>(`/orders/${id}/status`, {

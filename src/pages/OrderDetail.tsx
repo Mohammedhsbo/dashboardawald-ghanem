@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, User, MapPin, ShoppingBag, AlertCircle, Package } from 'lucide-react';
-import { orders, type OrderStatus } from '../api';
+import { ArrowLeft, User, MapPin, ShoppingBag, AlertCircle, Package, Image } from 'lucide-react';
+import { orders, type DeliveryAddress, type OrderStatus } from '../api';
 import Badge from '../components/Badge';
 import OrderStatusButtons from '../components/OrderStatusButtons';
 import Modal from '../components/Modal';
@@ -25,6 +25,29 @@ const t = {
     phone: 'Phone',
     email: 'Email',
     address: 'Delivery Address',
+    payment: 'Payment',
+    paymentMethod: 'Payment method',
+    paymentStatus: 'Payment status',
+    cash: 'Cash on delivery',
+    instapay: 'InstaPay transfer',
+    unpaid: 'Unpaid',
+    pendingVerification: 'Awaiting verification',
+    paid: 'Paid',
+    unknown: 'Not specified',
+    senderIdentifier: 'Sender account / wallet',
+    senderName: 'Transfer sender name',
+    proof: 'Transfer proof',
+    openProof: 'Open transfer proof',
+    proofError: 'Could not open transfer proof.',
+    recipientName: 'Recipient',
+    recipientPhone: 'Recipient phone',
+    governorate: 'Governorate',
+    city: 'City / area',
+    street: 'Street',
+    buildingNumber: 'Building',
+    floor: 'Floor',
+    apartment: 'Apartment',
+    instructions: 'Delivery instructions',
     branch: 'Branch',
     createdBy: 'Created By',
     orderItems: 'Order Items',
@@ -74,6 +97,29 @@ const t = {
     phone: 'الهاتف',
     email: 'البريد الإلكتروني',
     address: 'عنوان التسليم',
+    payment: 'بيانات الدفع',
+    paymentMethod: 'طريقة الدفع',
+    paymentStatus: 'حالة الدفع',
+    cash: 'الدفع عند الاستلام',
+    instapay: 'تحويل InstaPay',
+    unpaid: 'غير مدفوع',
+    pendingVerification: 'بانتظار مراجعة التحويل',
+    paid: 'مدفوع',
+    unknown: 'غير محدد',
+    senderIdentifier: 'رقم الحساب أو المحفظة المحوّل منها',
+    senderName: 'اسم صاحب التحويل',
+    proof: 'إثبات التحويل',
+    openProof: 'فتح صورة إثبات التحويل',
+    proofError: 'تعذر فتح صورة إثبات التحويل.',
+    recipientName: 'المستلم',
+    recipientPhone: 'هاتف المستلم',
+    governorate: 'المحافظة',
+    city: 'المدينة أو المنطقة',
+    street: 'الشارع',
+    buildingNumber: 'رقم المبنى',
+    floor: 'الدور',
+    apartment: 'الشقة',
+    instructions: 'تعليمات التوصيل',
     branch: 'الفرع',
     createdBy: 'أنشأه',
     orderItems: 'عناصر الطلب',
@@ -123,6 +169,7 @@ export default function OrderDetail({ lang }: Props) {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [pendingStatus, setPendingStatus] = useState<OrderStatus | null>(null);
   const [reason, setReason] = useState('');
+  const [paymentProofError, setPaymentProofError] = useState('');
 
   const { data: order, isLoading, isError } = useQuery({
     queryKey: ['order', id],
@@ -195,6 +242,37 @@ export default function OrderDetail({ lang }: Props) {
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
+
+  const openPaymentProof = async () => {
+    const preview = window.open('', '_blank');
+    if (!preview) {
+      setPaymentProofError(i18n.proofError);
+      return;
+    }
+    preview.opener = null;
+    setPaymentProofError('');
+    try {
+      const proof = await orders.getPaymentProof(id!);
+      const url = URL.createObjectURL(proof);
+      preview.location.href = url;
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      preview.close();
+      setPaymentProofError(i18n.proofError);
+    }
+  };
+
+  const addressLabels: Record<keyof DeliveryAddress, string> = {
+    recipientName: i18n.recipientName,
+    recipientPhone: i18n.recipientPhone,
+    governorate: i18n.governorate,
+    city: i18n.city,
+    street: i18n.street,
+    buildingNumber: i18n.buildingNumber,
+    floor: i18n.floor,
+    apartment: i18n.apartment,
+    instructions: i18n.instructions,
   };
 
   if (isLoading) {
@@ -293,16 +371,81 @@ export default function OrderDetail({ lang }: Props) {
             <MapPin size={18} style={{ color: 'var(--accent-primary)' }} />
             <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>{i18n.address}</h2>
           </div>
-          {order.customer.defaultAddress ? (
+          {order.deliveryAddress ? (
+            <dl style={{ display: 'grid', gap: '0.5rem', fontSize: '0.875rem' }}>
+              {(Object.keys(addressLabels) as Array<keyof DeliveryAddress>).map((field) => {
+                const value = order.deliveryAddress?.[field];
+                return value ? (
+                  <div key={field} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 0.6fr) 1fr', gap: '0.5rem' }}>
+                    <dt style={{ color: 'var(--text-muted)' }}>{addressLabels[field]}</dt>
+                    <dd style={{ margin: 0, color: 'var(--text-secondary)' }}>{value}</dd>
+                  </div>
+                ) : null;
+              })}
+            </dl>
+          ) : order.address ? (
             <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-              <div>{order.customer.defaultAddress.addressLine}</div>
-              {order.customer.defaultAddress.city && (
-                <div style={{ marginTop: '0.25rem' }}>{order.customer.defaultAddress.city}</div>
-              )}
+              <div>{order.address}</div>
             </div>
           ) : (
             <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>—</p>
           )}
+        </div>
+
+        {/* Payment method, verification state, and private transfer proof */}
+        <div className="card mb-6" style={{ gridColumn: '1 / -1' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+            <ShoppingBag size={18} style={{ color: 'var(--accent-primary)' }} />
+            <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>{i18n.payment}</h2>
+          </div>
+          <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+            <div>
+              <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{i18n.paymentMethod}</dt>
+              <dd style={{ margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
+                {order.paymentMethod === 'instapay' ? i18n.instapay : order.paymentMethod === 'cash' ? i18n.cash : i18n.unknown}
+              </dd>
+            </div>
+            <div>
+              <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{i18n.paymentStatus}</dt>
+              <dd style={{ margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
+                {order.paymentStatus === 'pending_verification'
+                  ? i18n.pendingVerification
+                  : order.paymentStatus === 'unpaid'
+                    ? i18n.unpaid
+                    : order.paymentStatus === 'paid'
+                      ? i18n.paid
+                      : i18n.unknown}
+              </dd>
+            </div>
+            {order.paymentMethod === 'instapay' && (
+              <>
+                {order.senderIdentifier && (
+                  <div>
+                    <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{i18n.senderIdentifier}</dt>
+                    <dd dir="auto" style={{ margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>{order.senderIdentifier}</dd>
+                  </div>
+                )}
+                {order.senderName && (
+                  <div>
+                    <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{i18n.senderName}</dt>
+                    <dd style={{ margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>{order.senderName}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{i18n.proof}</dt>
+                  <dd style={{ margin: '0.25rem 0 0' }}>
+                    {order.hasPaymentProof ? (
+                      <button type="button" className="btn btn-outline" onClick={openPaymentProof}>
+                        <Image size={16} />
+                        {i18n.openProof}
+                      </button>
+                    ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                  </dd>
+                  {paymentProofError && <p role="alert" style={{ color: 'var(--error)', marginTop: '0.5rem' }}>{paymentProofError}</p>}
+                </div>
+              </>
+            )}
+          </dl>
         </div>
 
         {/* Branch info */}

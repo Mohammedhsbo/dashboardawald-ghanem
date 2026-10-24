@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Search, X, Calendar } from 'lucide-react';
-import type { OrderStatus } from '../api';
+import type { OrderPaymentMethod, OrderStatus } from '../api';
 
 interface OrderSearchProps {
   lang: 'en' | 'ar';
@@ -11,6 +11,7 @@ interface OrderSearchProps {
 export interface SearchFilters {
   search?: string;
   status?: OrderStatus;
+  paymentMethod?: OrderPaymentMethod;
   branchId?: string;
   startDate?: string;
   endDate?: string;
@@ -30,6 +31,7 @@ const statusOptions: Array<{ value: OrderStatus | 'all'; label: { en: string; ar
 export default function OrderSearch({ lang, onSearch, branches = [] }: OrderSearchProps) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<OrderStatus | 'all'>('all');
+  const [paymentMethod, setPaymentMethod] = useState<OrderPaymentMethod | 'all'>('all');
   const [branchId, setBranchId] = useState<string>('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -38,6 +40,7 @@ export default function OrderSearch({ lang, onSearch, branches = [] }: OrderSear
     const filters: SearchFilters = {};
     if (search.trim()) filters.search = search.trim();
     if (status !== 'all') filters.status = status;
+    if (paymentMethod !== 'all') filters.paymentMethod = paymentMethod;
     if (branchId !== 'all') filters.branchId = branchId;
     if (startDate) filters.startDate = new Date(startDate).toISOString();
     if (endDate) filters.endDate = new Date(endDate).toISOString();
@@ -47,13 +50,14 @@ export default function OrderSearch({ lang, onSearch, branches = [] }: OrderSear
   const handleClear = () => {
     setSearch('');
     setStatus('all');
+    setPaymentMethod('all');
     setBranchId('all');
     setStartDate('');
     setEndDate('');
     onSearch({});
   };
 
-  const hasFilters = search || status !== 'all' || branchId !== 'all' || startDate || endDate;
+  const hasFilters = search || status !== 'all' || paymentMethod !== 'all' || branchId !== 'all' || startDate || endDate;
   const isRtl = lang === 'ar';
 
   return (
@@ -103,6 +107,31 @@ export default function OrderSearch({ lang, onSearch, branches = [] }: OrderSear
               }}
             />
           </div>
+        </div>
+
+        {/* Payment method filter */}
+        <div>
+          <label
+            style={{
+              display: 'block',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              marginBottom: '0.375rem',
+            }}
+          >
+            {isRtl ? 'طريقة الدفع' : 'Payment method'}
+          </label>
+          <select
+            value={paymentMethod}
+            onChange={(e) => setPaymentMethod(e.target.value as OrderPaymentMethod | 'all')}
+            className="input"
+            style={{ width: '100%' }}
+          >
+            <option value="all">{isRtl ? 'كل طرق الدفع' : 'All payment methods'}</option>
+            <option value="cash">{isRtl ? 'الدفع عند الاستلام' : 'Cash on delivery'}</option>
+            <option value="instapay">{isRtl ? 'تحويل InstaPay' : 'InstaPay transfer'}</option>
+          </select>
         </div>
 
         {/* Status filter */}
