@@ -1,12 +1,18 @@
 import { z } from "zod";
 import { purchaseStatusSchema } from "./enums.js";
 
+const optionalVinSchema = (message: string) =>
+  z.string().max(50, "VIN is too long").refine(
+    (value) => value === "" || /^[A-Z0-9-]+$/.test(value),
+    { message },
+  );
+
 export const purchaseItemSchema = z.object({
   id: z.string().uuid(),
   purchaseId: z.string().uuid(),
   motorcycleId: z.string().uuid().optional().nullable(),
   model: z.string().max(200, "Model is too long"),
-  vin: z.string().max(50, "VIN is too long").optional().nullable(),
+  vin: optionalVinSchema("VIN must contain only uppercase English letters, digits and hyphens").optional().nullable(),
   quantity: z.number().int().min(1, "Quantity must be at least 1"),
   unitCost: z.number().min(0, "Cost must be positive"),
   createdAt: z.coerce.date(),
@@ -33,7 +39,7 @@ export type Purchase = z.infer<typeof purchaseSchema>;
 
 export const createPurchaseItemRequestSchema = z.object({
   model: z.string().min(1, "Model is required").max(200, "Model is too long"),
-  vin: z.string().max(50, "VIN is too long").optional(),
+  vin: optionalVinSchema("VIN must contain only uppercase English letters, digits and hyphens").optional(),
   quantity: z.number().int().min(1, "Quantity must be at least 1"),
   unitCost: z.number().min(0, "Cost must be positive"),
 });
@@ -59,7 +65,9 @@ export type UpdatePurchaseRequest = z.infer<typeof updatePurchaseSchema>;
 
 export const receivePurchaseItemSchema = z.object({
   purchaseItemId: z.string().uuid("Invalid item ID"),
-  vin: z.string().min(1, "VIN is required"),
+  vin: z.string().min(1, "VIN is required").regex(/^[A-Z0-9-]+$/, {
+    message: "VIN must contain only uppercase English letters, digits and hyphens",
+  }),
 });
 
 export const receivePurchaseSchema = z.object({

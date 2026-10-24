@@ -2192,6 +2192,7 @@ export interface FinancingCompany {
   name: string;
   whatsappNumber: string;
   annualInterestRate: number;
+  administrativeFees: number;
   isActive: boolean;
   sortOrder: number;
   createdAt: string;
