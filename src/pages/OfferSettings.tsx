@@ -152,9 +152,10 @@ export default function OfferSettings({ lang }: Props) {
     return <div className="page-container" style={{ direction: isRtl ? 'rtl' : 'ltr' }}><div className="card" style={{ color: 'var(--error)' }}><p>{labels.errorLoad}</p><button className="btn btn-outline mt-4" onClick={() => settingsQuery.refetch()}>{labels.retry}</button></div></div>;
   }
 
-  const canUpdateSettings = userQuery.data?.role.permissions.some(
-    permission => permission.resource === 'setting' && permission.action === 'update',
-  ) ?? false;
+  const canUpdateSettings = userQuery.data?.role.name === 'super_admin'
+    || userQuery.data?.role.permissions.some(
+      permission => permission.resource === 'setting' && permission.action === 'update',
+    ) === true;
 
   if (!canUpdateSettings) {
     return <div className="page-container" style={{ direction: isRtl ? 'rtl' : 'ltr' }}><div className="card" style={{ color: 'var(--error)' }} role="alert">{labels.noPermission}</div></div>;

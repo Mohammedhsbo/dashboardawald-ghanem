@@ -228,7 +228,7 @@ export const auth = {
     }),
   currentUser: () => apiFetch<{
     id: string;
-    role: { permissions: Array<{ resource: string; action: string }> };
+    role: { name: string; permissions: Array<{ resource: string; action: string }> };
   }>('/auth/me'),
   logout: () =>
     apiFetch<null>('/auth/logout', { method: 'POST' }),
