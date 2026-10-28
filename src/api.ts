@@ -183,6 +183,15 @@ export interface PaymentSettings {
   instaPayAccount: string | null;
 }
 
+export interface OfferSettings {
+  enabled: boolean;
+  discountPercentage: number;
+  downPaymentAmount: number | null;
+  installmentDurationMonths: number;
+  currency: 'EGP';
+  updatedAt?: string | null;
+}
+
 export const paymentSettings = {
   get: () => apiFetch<PaymentSettings>('/admin/payment-settings'),
   update: (instaPayAccount: string | null) =>
@@ -191,6 +200,22 @@ export const paymentSettings = {
       body: JSON.stringify({ instaPayAccount }),
     }),
 };
+
+export const offerSettings = {
+  get: () => apiFetch<OfferSettings>('/admin/offer-settings'),
+  update: (data: OfferSettingsUpdate) =>
+    apiFetch<OfferSettings>('/admin/offer-settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+};
+
+export interface OfferSettingsUpdate {
+  enabled: boolean;
+  discountPercentage: number;
+  downPaymentAmount: number | null;
+  installmentDurationMonths: number;
+}
 
 // ─────────────────────────────────────────────────────────
 // Auth
@@ -201,6 +226,10 @@ export const auth = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
+  currentUser: () => apiFetch<{
+    id: string;
+    role: { permissions: Array<{ resource: string; action: string }> };
+  }>('/auth/me'),
   logout: () =>
     apiFetch<null>('/auth/logout', { method: 'POST' }),
 };
@@ -854,9 +883,12 @@ export interface MotorcycleResponse {
 export interface MotorcycleListItem {
   id: string;
   vin: string;
+  engineNumber?: string | null;
   model: string;
   year: number;
+  color: string | null;
   price: number;
+  costPrice: number;
   status: MotorcycleStatus;
   branchId: string;
   brand: { nameEn: string; nameAr: string };
@@ -2232,7 +2264,7 @@ export interface FinancingCompany {
   name: string;
   whatsappNumber: string;
   annualInterestRate: number;
-  administrativeFees: number;
+  administrativeFeesPercentage: number;
   isActive: boolean;
   sortOrder: number;
   createdAt: string;

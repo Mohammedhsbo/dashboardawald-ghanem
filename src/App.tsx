@@ -23,6 +23,7 @@ import CustomerForm from './pages/CustomerForm';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import PaymentSettings from './pages/PaymentSettings';
+import OfferSettings from './pages/OfferSettings';
 import Reports from './pages/Reports';
 import Configuration from './pages/Configuration';
 import Branches from './pages/Branches';
@@ -162,6 +163,7 @@ export default function App() {
               <Route path="/orders" element={<Orders lang={lang} />} />
               <Route path="/orders/:id" element={<OrderDetail lang={lang} />} />
               <Route path="/payment-settings" element={<PaymentSettings lang={lang} />} />
+              <Route path="/offer-settings" element={<OfferSettings lang={lang} />} />
               <Route path="/financing" element={<FinancingContracts lang={lang} />} />
               <Route path="/financing/new" element={<FinancingContractCreate lang={lang} />} />
               <Route path="/financing/:id" element={<FinancingContractDetail lang={lang} />} />
